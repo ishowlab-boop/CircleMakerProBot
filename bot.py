@@ -27,10 +27,9 @@ from telegram.ext import (
 )
 
 # =========================
-# CONFIG (defaults included)
+# CONFIG
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-
 DB_PATH = os.getenv("DB_PATH", "credits.db")
 
 TARGET_SIZE = 640
@@ -44,10 +43,19 @@ VOICE_SUPPORT_LINK = os.getenv("VOICE_SUPPORT_LINK", "https://t.me/ariyanvoice")
 MODEL_SUPPORT_LINK = os.getenv("MODEL_SUPPORT_LINK", "https://modelboxbd.com").strip()
 ADMIN_CONTACTS = os.getenv("ADMIN_CONTACTS", "https://t.me/AriyanFix").strip()
 
+# =========================
+# ADMIN (IMPORTANT)
+# OWNER_ID works automatically
+# =========================
 ADMIN_IDS = set()
+
 _admin_raw = os.getenv("ADMIN_IDS", "").strip()
 if _admin_raw:
-    ADMIN_IDS = {int(x.strip()) for x in _admin_raw.split(",") if x.strip().isdigit()}
+    ADMIN_IDS.update({int(x.strip()) for x in _admin_raw.split(",") if x.strip().isdigit()})
+
+OWNER_ID = os.getenv("OWNER_ID", "").strip()  # you already have this in Railway
+if OWNER_ID.isdigit():
+    ADMIN_IDS.add(int(OWNER_ID))
 
 
 def is_admin(uid: int) -> bool:
@@ -70,7 +78,7 @@ def parse_int(text: str) -> int:
 
 
 # =========================
-# UI: Menu buttons (emoji exactly)
+# UI: MENU
 # =========================
 BTN_MODEL = "🧠 MODEL SUPPORT"
 BTN_VOICE = "🎙 VOICE SUPPORT"
@@ -78,7 +86,6 @@ BTN_ADMIN_CONTACT = "🧑‍💼 ADMIN CONTACT"
 BTN_CHANNEL = "📣 CHANNEL"
 BTN_USAGE = "📊 USAGE"
 
-# accept both emoji/non-emoji just in case
 BTN_MODEL_ALT = "MODEL SUPPORT"
 BTN_VOICE_ALT = "VOICE SUPPORT"
 BTN_ADMIN_ALT = "ADMIN CONTACT"
@@ -123,22 +130,22 @@ def kb_url_button(title: str, url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton(title, url=url)]])
 
 
-def kb_admin_contacts() -> InlineKeyboardMarkup:
-    links = parse_links(ADMIN_CONTACTS)
-    rows = [[InlineKeyboardButton(f"👤 Admin {i}", url=link)] for i, link in enumerate(links, start=1)]
-    return InlineKeyboardMarkup(rows)
-
-
-def kb_channel() -> InlineKeyboardMarkup:
-    return kb_url_button("📣 Open Channel", to_url(REQUIRED_CHANNEL))
+def kb_model_support() -> InlineKeyboardMarkup:
+    return kb_url_button("🧠 Open Model Support", to_url(MODEL_SUPPORT_LINK))
 
 
 def kb_voice_support() -> InlineKeyboardMarkup:
     return kb_url_button("🎙 Open Voice Support", to_url(VOICE_SUPPORT_LINK))
 
 
-def kb_model_support() -> InlineKeyboardMarkup:
-    return kb_url_button("🧠 Open Model Support", to_url(MODEL_SUPPORT_LINK))
+def kb_channel() -> InlineKeyboardMarkup:
+    return kb_url_button("📣 Open Channel", to_url(REQUIRED_CHANNEL))
+
+
+def kb_admin_contacts() -> InlineKeyboardMarkup:
+    links = parse_links(ADMIN_CONTACTS)
+    rows = [[InlineKeyboardButton(f"👤 Admin {i}", url=link)] for i, link in enumerate(links, start=1)]
+    return InlineKeyboardMarkup(rows)
 
 
 # =========================
@@ -383,42 +390,7 @@ def build_ffmpeg_voice_cmd(inp: str, outp: str) -> list[str]:
 
 
 # =========================
-# USER FEATURES
-# =========================
-async def send_usage(update: Update, user_id: int):
-    credits, vfrom, exp = await db_get_credit(user_id)
-    videos, voices = await stats_get(user_id)
-    lines = [
-        "📊 USAGE",
-        f"🎬 Videos made: {videos}",
-        f"🎧 Voices made: {voices}",
-        f"💳 Credits: {credits}",
-    ]
-    if vfrom is not None and exp is not None:
-        lines.append(f"✅ Start: {fmt_date(vfrom)}")
-        lines.append(f"⏳ End: {fmt_date(exp)}")
-    await update.message.reply_text("\n".join(lines), reply_markup=reply_menu())
-
-
-async def do_free(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    if await freebies_is_claimed(user_id):
-        await update.message.reply_text("✅ You already claimed free credits.", reply_markup=reply_menu())
-        return
-
-    if not await is_user_subscribed(context, user_id):
-        await update.message.reply_text(
-            f"🎁 Free credits পেতে আগে join করুন: {REQUIRED_CHANNEL}\nJoin করে আবার /free দিন।",
-            reply_markup=kb_channel(),
-        )
-        return
-
-    await db_add_credits(user_id, FREE_CREDITS)
-    await freebies_mark_claimed(user_id)
-    await update.message.reply_text(f"🎁 Added {FREE_CREDITS} free credits!", reply_markup=reply_menu())
-
-
-# =========================
-# ADMIN PANEL (Inline)
+# ADMIN PANEL
 # =========================
 admin_steps: dict[int, dict] = {}
 
@@ -453,7 +425,7 @@ def validity_action_kb(user_id: int) -> InlineKeyboardMarkup:
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await upsert_user(update)
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ Admin only. First set ADMIN_IDS in Railway.", reply_markup=reply_menu())
+        await update.message.reply_text("⛔ Admin only.", reply_markup=reply_menu())
         return
     await update.message.reply_text("⚙️ Admin Panel", reply_markup=admin_menu_kb())
 
@@ -543,9 +515,8 @@ async def admin_step_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     msg = update.message
     if not msg:
         return
-    uid = msg.from_user.id
 
-    # only run when admin is in a step
+    uid = msg.from_user.id
     if uid not in admin_steps:
         return
     if not is_admin(uid):
@@ -559,10 +530,7 @@ async def admin_step_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if action == "credits_pick_user":
             target = parse_int(msg.text)
             await ensure_user(target)
-            await msg.reply_text(
-                f"User {target}\nChoose credits action:",
-                reply_markup=credit_action_kb(target),
-            )
+            await msg.reply_text(f"User {target}\nChoose credits action:", reply_markup=credit_action_kb(target))
             return
 
         if action == "credits_add_amount":
@@ -582,10 +550,7 @@ async def admin_step_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if action == "validity_pick_user":
             target = parse_int(msg.text)
             await ensure_user(target)
-            await msg.reply_text(
-                f"User {target}\nChoose validity action:",
-                reply_markup=validity_action_kb(target),
-            )
+            await msg.reply_text(f"User {target}\nChoose validity action:", reply_markup=validity_action_kb(target))
             return
 
         if action == "validity_days":
@@ -622,7 +587,7 @@ async def admin_step_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # =========================
-# USER COMMANDS
+# USER COMMANDS + MENU
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await upsert_user(update)
@@ -640,21 +605,46 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def free_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await upsert_user(update)
-    await do_free(update, context, update.effective_user.id)
+
+    uid = update.effective_user.id
+    if await freebies_is_claimed(uid):
+        await update.message.reply_text("✅ You already claimed free credits.", reply_markup=reply_menu())
+        return
+
+    if not await is_user_subscribed(context, uid):
+        await update.message.reply_text(
+            f"🎁 Free credits পেতে আগে join করুন: {REQUIRED_CHANNEL}\nJoin করে আবার /free দিন।",
+            reply_markup=kb_channel(),
+        )
+        return
+
+    await db_add_credits(uid, FREE_CREDITS)
+    await freebies_mark_claimed(uid)
+    await update.message.reply_text(f"🎁 Added {FREE_CREDITS} free credits!", reply_markup=reply_menu())
 
 
-async def id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"🆔 Your ID: {update.effective_user.id}", reply_markup=reply_menu())
+async def usage_cmd(update: Update):
+    uid = update.effective_user.id
+    credits, vfrom, exp = await db_get_credit(uid)
+    videos, voices = await stats_get(uid)
+
+    lines = [
+        "📊 USAGE",
+        f"🎬 Videos made: {videos}",
+        f"🎧 Voices made: {voices}",
+        f"💳 Credits: {credits}",
+    ]
+    if vfrom is not None and exp is not None:
+        lines.append(f"✅ Start: {fmt_date(vfrom)}")
+        lines.append(f"⏳ End: {fmt_date(exp)}")
+
+    await update.message.reply_text("\n".join(lines), reply_markup=reply_menu())
 
 
-# =========================
-# MENU CLICK HANDLER
-# =========================
 async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await upsert_user(update)
     txt = (update.message.text or "").strip()
 
-    # normalize for old keyboards
     if txt in (BTN_MODEL, BTN_MODEL_ALT):
         await update.message.reply_text("🧠 MODEL SUPPORT", reply_markup=kb_model_support())
         return
@@ -672,7 +662,7 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if txt in (BTN_USAGE, BTN_USAGE_ALT):
-        await send_usage(update, update.effective_user.id)
+        await usage_cmd(update)
         return
 
     await update.message.reply_text("Menu থেকে অপশন সিলেক্ট করুন।", reply_markup=reply_menu())
@@ -774,7 +764,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# MAIN (handler order FIXED)
+# MAIN (Handler order is IMPORTANT)
 # =========================
 def main():
     if not BOT_TOKEN:
@@ -784,22 +774,18 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("free", free_cmd))
-    app.add_handler(CommandHandler("id", id_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
 
-    # Admin callbacks
     app.add_handler(CallbackQueryHandler(admin_cb, pattern=r"^admin:"), group=0)
 
-    # ✅ Admin steps FIRST (so menu doesn't interfere)
+    # ✅ admin steps first, so menu doesn't block it
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_step_handler), group=0)
 
-    # ✅ Menu clicks SECOND
+    # ✅ menu second
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_click), group=1)
 
-    # Media
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.AUDIO, handle_voice))
 
