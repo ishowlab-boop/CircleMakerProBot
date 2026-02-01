@@ -1,19 +1,21 @@
 import time
+import re
 from datetime import datetime, timezone
 from telebot import types
 
-# ---------- Helpers ----------
+
 def fmt_date(ts):
     if ts is None:
         return "N/A"
     return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%A, %d %b %Y")
 
+
 def parse_int(text: str) -> int:
-    import re
     nums = re.findall(r"\d+", text or "")
     if not nums:
         raise ValueError("No number found")
     return int(nums[0])
+
 
 # ---------- Keyboards ----------
 def admin_menu_kb():
@@ -23,6 +25,7 @@ def admin_menu_kb():
     kb.add(types.InlineKeyboardButton("📣 Broadcast", callback_data="adm:bcast"))
     kb.add(types.InlineKeyboardButton("⬇️ Download DB", callback_data="adm:download"))
     return kb
+
 
 def users_page_kb(users, offset, total):
     kb = types.InlineKeyboardMarkup()
@@ -42,6 +45,7 @@ def users_page_kb(users, offset, total):
 
     kb.add(types.InlineKeyboardButton("🏠 Admin Menu", callback_data="adm:menu"))
     return kb
+
 
 def user_actions_kb(user_id, back_offset):
     kb = types.InlineKeyboardMarkup()
@@ -73,6 +77,18 @@ def user_actions_kb(user_id, back_offset):
     )
     return kb
 
+
+# ---------- Send Panel (used by button + /admin) ----------
+def send_admin_panel(bot, db, chat_id: int):
+    total = db.count_users()
+    bot.send_message(
+        chat_id,
+        f"⚙️ <b>Admin Panel</b>\n👥 Total Users: <b>{total}</b>",
+        reply_markup=admin_menu_kb(),
+        parse_mode="HTML",
+    )
+
+
 # ---------- Register ----------
 def register_admin_panel(bot, db, config):
     steps = {}  # admin_id -> step dict
@@ -80,19 +96,13 @@ def register_admin_panel(bot, db, config):
     def is_admin(uid: int) -> bool:
         return uid in config.ADMIN_IDS
 
-    # /admin command (only admin)
+    # (optional) /admin still works
     @bot.message_handler(commands=["admin"])
     def cmd_admin(message):
         db.upsert_user(message.from_user)
         if not is_admin(message.from_user.id):
             return bot.reply_to(message, "⛔ Admin only.")
-
-        total = db.count_users()
-        bot.send_message(
-            message.chat.id,
-            f"⚙️ Admin Panel\n👥 Total Users: {total}",
-            reply_markup=admin_menu_kb()
-        )
+        send_admin_panel(bot, db, message.chat.id)
 
     @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("adm:"))
     def cb(call):
@@ -105,12 +115,7 @@ def register_admin_panel(bot, db, config):
         act = parts[1]
 
         if act == "menu":
-            total = db.count_users()
-            return bot.send_message(
-                call.message.chat.id,
-                f"⚙️ Admin Panel\n👥 Total Users: {total}",
-                reply_markup=admin_menu_kb()
-            )
+            return send_admin_panel(bot, db, call.message.chat.id)
 
         if act == "users":
             offset = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
@@ -128,13 +133,13 @@ def register_admin_panel(bot, db, config):
             credits, vfrom, exp = db.get_credit(target)
             usage = db.get_usage(target)
             text = (
-                f"👤 User: {target}\n"
-                f"🎬 Videos made: {usage}\n"
-                f"💳 Credits: {credits}\n"
-                f"✅ Start: {fmt_date(vfrom)}\n"
-                f"⏳ End: {fmt_date(exp)}\n"
+                f"👤 User: <code>{target}</code>\n"
+                f"🎬 Videos made: <b>{usage}</b>\n"
+                f"💳 Credits: <b>{credits}</b>\n"
+                f"✅ Start: <b>{fmt_date(vfrom)}</b>\n"
+                f"⏳ End: <b>{fmt_date(exp)}</b>\n"
             )
-            return bot.send_message(call.message.chat.id, text, reply_markup=user_actions_kb(target, back_offset))
+            return bot.send_message(call.message.chat.id, text, reply_markup=user_actions_kb(target, back_offset), parse_mode="HTML")
 
         if act in ("add", "rem", "valid"):
             target = int(parts[2])
@@ -151,13 +156,13 @@ def register_admin_panel(bot, db, config):
             credits, vfrom, exp = db.get_credit(target)
             usage = db.get_usage(target)
             text = (
-                f"👤 User: {target}\n"
-                f"🎬 Videos made: {usage}\n"
-                f"💳 Credits: {credits}\n"
-                f"✅ Start: {fmt_date(vfrom)}\n"
-                f"⏳ End: {fmt_date(exp)}\n"
+                f"👤 User: <code>{target}</code>\n"
+                f"🎬 Videos made: <b>{usage}</b>\n"
+                f"💳 Credits: <b>{credits}</b>\n"
+                f"✅ Start: <b>{fmt_date(vfrom)}</b>\n"
+                f"⏳ End: <b>{fmt_date(exp)}</b>\n"
             )
-            return bot.send_message(call.message.chat.id, text, reply_markup=user_actions_kb(target, back_offset))
+            return bot.send_message(call.message.chat.id, text, reply_markup=user_actions_kb(target, back_offset), parse_mode="HTML")
 
         if act == "vrem":
             target = int(parts[2])
@@ -167,13 +172,13 @@ def register_admin_panel(bot, db, config):
             credits, vfrom, exp = db.get_credit(target)
             usage = db.get_usage(target)
             text = (
-                f"👤 User: {target}\n"
-                f"🎬 Videos made: {usage}\n"
-                f"💳 Credits: {credits}\n"
-                f"✅ Start: {fmt_date(vfrom)}\n"
-                f"⏳ End: {fmt_date(exp)}\n"
+                f"👤 User: <code>{target}</code>\n"
+                f"🎬 Videos made: <b>{usage}</b>\n"
+                f"💳 Credits: <b>{credits}</b>\n"
+                f"✅ Start: <b>{fmt_date(vfrom)}</b>\n"
+                f"⏳ End: <b>{fmt_date(exp)}</b>\n"
             )
-            return bot.send_message(call.message.chat.id, text, reply_markup=user_actions_kb(target, back_offset))
+            return bot.send_message(call.message.chat.id, text, reply_markup=user_actions_kb(target, back_offset), parse_mode="HTML")
 
         if act == "ccredit":
             target = int(parts[2])
@@ -229,6 +234,7 @@ def register_admin_panel(bot, db, config):
                 raw = (message.text or "").strip()
                 sign = -1 if raw.startswith("-") else 1
                 amt = parse_int(raw)
+
                 target = int(step["target"])
                 back_offset = int(step["back"])
 
@@ -240,30 +246,31 @@ def register_admin_panel(bot, db, config):
                 credits, vfrom, exp = db.get_credit(target)
                 usage = db.get_usage(target)
                 text = (
-                    f"👤 User: {target}\n"
-                    f"🎬 Videos made: {usage}\n"
-                    f"💳 Credits: {credits}\n"
-                    f"✅ Start: {fmt_date(vfrom)}\n"
-                    f"⏳ End: {fmt_date(exp)}\n"
+                    f"👤 User: <code>{target}</code>\n"
+                    f"🎬 Videos made: <b>{usage}</b>\n"
+                    f"💳 Credits: <b>{credits}</b>\n"
+                    f"✅ Start: <b>{fmt_date(vfrom)}</b>\n"
+                    f"⏳ End: <b>{fmt_date(exp)}</b>\n"
                 )
-                bot.send_message(message.chat.id, text, reply_markup=user_actions_kb(target, back_offset))
+                bot.send_message(message.chat.id, text, reply_markup=user_actions_kb(target, back_offset), parse_mode="HTML")
 
             elif step["type"] == "cvalid":
                 days = parse_int(message.text)
                 target = int(step["target"])
                 back_offset = int(step["back"])
+
                 db.set_validity(target, days)
 
                 credits, vfrom, exp = db.get_credit(target)
                 usage = db.get_usage(target)
                 text = (
-                    f"👤 User: {target}\n"
-                    f"🎬 Videos made: {usage}\n"
-                    f"💳 Credits: {credits}\n"
-                    f"✅ Start: {fmt_date(vfrom)}\n"
-                    f"⏳ End: {fmt_date(exp)}\n"
+                    f"👤 User: <code>{target}</code>\n"
+                    f"🎬 Videos made: <b>{usage}</b>\n"
+                    f"💳 Credits: <b>{credits}</b>\n"
+                    f"✅ Start: <b>{fmt_date(vfrom)}</b>\n"
+                    f"⏳ End: <b>{fmt_date(exp)}</b>\n"
                 )
-                bot.send_message(message.chat.id, text, reply_markup=user_actions_kb(target, back_offset))
+                bot.send_message(message.chat.id, text, reply_markup=user_actions_kb(target, back_offset), parse_mode="HTML")
 
             elif step["type"] == "bcast":
                 text = message.text or ""
