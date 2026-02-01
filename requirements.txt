@@ -1,0 +1,6 @@
+pyTelegramBotAPI==4.17.0
+python-dotenv==1.0.1
+requests==2.31.0
+fish-audio-sdk==2025.6.3
+aiofiles==24.1.0
+Flask==3.0.3
