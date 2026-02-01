@@ -1,5 +1,6 @@
 import os
 import time
+import re
 import asyncio
 import tempfile
 from pathlib import Path
@@ -35,28 +36,95 @@ MAX_SECONDS = 60
 
 DB_PATH = os.getenv("DB_PATH", "credits.db")
 
-# ✅ Only video costs credits
-CREDITS_PER_VIDEO = int(os.getenv("CREDITS_PER_VIDEO", "1"))
+CREDITS_PER_VIDEO = int(os.getenv("CREDITS_PER_VIDEO", "1"))  # only video costs
 FREE_CREDITS = int(os.getenv("FREE_CREDITS", "2"))
 
-REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "").strip()  # e.g. "@YourChannel"
-VOICE_SUPPORT_LINK = os.getenv("VOICE_SUPPORT_LINK", "https://t.me/ariyanvoice").strip()
-MODEL_SUPPORT_LINK = os.getenv("MODEL_SUPPORT_LINK", "https://modelboxbd.com").strip()
-ADMIN_CONTACTS = os.getenv("ADMIN_CONTACTS", "").strip()  # e.g. "https://t.me/AriyanFix,@admin2"
+REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "").strip()      # e.g. "@iuo82828"
+VOICE_SUPPORT_LINK = os.getenv("VOICE_SUPPORT_LINK", "").strip()  # https://t.me/ariyanvoice
+MODEL_SUPPORT_LINK = os.getenv("MODEL_SUPPORT_LINK", "").strip()  # https://modelboxbd.com
+ADMIN_CONTACTS = os.getenv("ADMIN_CONTACTS", "").strip()          # https://t.me/AriyanFix
 
 ADMIN_IDS = set()
 _admin_raw = os.getenv("ADMIN_IDS", "").strip()
 if _admin_raw:
     ADMIN_IDS = {int(x.strip()) for x in _admin_raw.split(",") if x.strip().isdigit()}
 
-ADMIN_SELECTED: dict[int, int] = {}
+def is_admin(uid: int) -> bool:
+    return uid in ADMIN_IDS
 
-# Reply keyboard labels (5 buttons)
+def now_ts() -> int:
+    return int(time.time())
+
+def fmt_date(ts: int) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%A, %d %b %Y")
+
+def parse_int(text: str) -> int:
+    nums = re.findall(r"\d+", text or "")
+    if not nums:
+        raise ValueError("No number found")
+    return int(nums[0])
+
+# =========================
+# UI (Reply menu - 5 buttons)
+# =========================
 BTN_MODEL = "🧠 MODEL SUPPORT"
 BTN_VOICE = "🎙 VOICE SUPPORT"
-BTN_ADMIN = "🧑‍💼 ADMIN CONTACT"
+BTN_ADMIN_CONTACT = "🧑‍💼 ADMIN CONTACT"
 BTN_CHANNEL = "📣 CHANNEL"
 BTN_USAGE = "📊 USAGE"
+
+def reply_menu() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [BTN_MODEL, BTN_VOICE],
+        [BTN_ADMIN_CONTACT, BTN_CHANNEL],
+        [BTN_USAGE],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def to_url(x: str) -> str:
+    x = (x or "").strip()
+    if not x:
+        return ""
+    if x.startswith("http://") or x.startswith("https://"):
+        return x
+    if x.startswith("@"):
+        return f"https://t.me/{x.lstrip('@')}"
+    # domain
+    if "." in x and " " not in x:
+        return f"https://{x}"
+    return x
+
+def parse_links(raw: str) -> list[str]:
+    if not raw:
+        return []
+    out = []
+    for part in raw.split(","):
+        u = to_url(part)
+        if u:
+            out.append(u)
+    return out
+
+def channel_url() -> str:
+    return to_url(REQUIRED_CHANNEL) if REQUIRED_CHANNEL else ""
+
+def voice_inline_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🎙 Open Voice Support", url=to_url(VOICE_SUPPORT_LINK))]])
+
+def model_inline_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🧠 Open Model Support", url=to_url(MODEL_SUPPORT_LINK))]])
+
+def channel_inline_kb() -> InlineKeyboardMarkup | None:
+    url = channel_url()
+    if not url:
+        return None
+    return InlineKeyboardMarkup([[InlineKeyboardButton("📣 Open Channel", url=url)]])
+
+def admin_contact_inline_kb() -> InlineKeyboardMarkup | None:
+    links = parse_links(ADMIN_CONTACTS)
+    if not links:
+        return None
+    rows = [[InlineKeyboardButton(f"👤 Admin {i}", url=link)] for i, link in enumerate(links, start=1)]
+    return InlineKeyboardMarkup(rows)
 
 # =========================
 # DB
@@ -73,92 +141,13 @@ db.execute(
     "user_id INTEGER PRIMARY KEY, balance INTEGER NOT NULL DEFAULT 0, "
     "valid_from INTEGER, expires_at INTEGER)"
 )
-db.execute(
-    "CREATE TABLE IF NOT EXISTS freebies (user_id INTEGER PRIMARY KEY, claimed INTEGER NOT NULL DEFAULT 0)"
-)
+db.execute("CREATE TABLE IF NOT EXISTS freebies (user_id INTEGER PRIMARY KEY, claimed INTEGER NOT NULL DEFAULT 0)")
 db.execute(
     "CREATE TABLE IF NOT EXISTS stats ("
     "user_id INTEGER PRIMARY KEY, videos_made INTEGER NOT NULL DEFAULT 0, "
     "voices_made INTEGER NOT NULL DEFAULT 0)"
 )
 db.commit()
-
-
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
-
-
-def now_ts() -> int:
-    return int(time.time())
-
-
-def fmt_date(ts: int) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%A, %d %b %Y")
-
-
-def reply_menu() -> ReplyKeyboardMarkup:
-    # 5 buttons layout
-    keyboard = [
-        [BTN_MODEL, BTN_VOICE],
-        [BTN_ADMIN, BTN_CHANNEL],
-        [BTN_USAGE],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-
-def to_url(x: str) -> str:
-    x = (x or "").strip()
-    if not x:
-        return ""
-    if x.startswith("http://") or x.startswith("https://"):
-        return x
-    if x.startswith("@"):
-        return f"https://t.me/{x.lstrip('@')}"
-    # if it's domain like modelboxbd.com
-    if "." in x and " " not in x:
-        return f"https://{x}"
-    return x
-
-
-def parse_links(raw: str) -> list[str]:
-    if not raw:
-        return []
-    out = []
-    for part in raw.split(","):
-        u = to_url(part)
-        if u:
-            out.append(u)
-    return out
-
-
-def channel_url() -> str:
-    return to_url(REQUIRED_CHANNEL) if REQUIRED_CHANNEL else ""
-
-
-def admin_inline_kb() -> InlineKeyboardMarkup | None:
-    links = parse_links(ADMIN_CONTACTS)
-    if not links:
-        return None
-    rows = [[InlineKeyboardButton(f"👤 Admin {i}", url=link)] for i, link in enumerate(links, start=1)]
-    return InlineKeyboardMarkup(rows)
-
-
-def channel_inline_kb() -> InlineKeyboardMarkup | None:
-    url = channel_url()
-    if not url:
-        return None
-    return InlineKeyboardMarkup([[InlineKeyboardButton("📣 Open Channel", url=url)]])
-
-
-def voice_inline_kb() -> InlineKeyboardMarkup:
-    url = to_url(VOICE_SUPPORT_LINK)
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🎙 Open Voice Support", url=url)]])
-
-
-def model_inline_kb() -> InlineKeyboardMarkup:
-    url = to_url(MODEL_SUPPORT_LINK)
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🧠 Open Model Support", url=url)]])
-
 
 async def upsert_user(update: Update) -> None:
     u = update.effective_user
@@ -170,14 +159,10 @@ async def upsert_user(update: Update) -> None:
             "VALUES (?, ?, ?, ?, ?)",
             (u.id, u.username, u.first_name, u.last_name, now_ts()),
         )
-        db.execute(
-            "INSERT OR IGNORE INTO credits(user_id, balance, valid_from, expires_at) VALUES (?, 0, NULL, NULL)",
-            (u.id,),
-        )
+        db.execute("INSERT OR IGNORE INTO credits(user_id, balance, valid_from, expires_at) VALUES (?, 0, NULL, NULL)", (u.id,))
         db.execute("INSERT OR IGNORE INTO freebies(user_id, claimed) VALUES (?, 0)", (u.id,))
         db.execute("INSERT OR IGNORE INTO stats(user_id, videos_made, voices_made) VALUES (?, 0, 0)", (u.id,))
         db.commit()
-
 
 async def cleanup_if_expired(user_id: int) -> None:
     async with db_lock:
@@ -190,7 +175,6 @@ async def cleanup_if_expired(user_id: int) -> None:
             db.execute("UPDATE credits SET balance=0, valid_from=NULL, expires_at=NULL WHERE user_id=?", (user_id,))
             db.commit()
 
-
 async def db_get_credit(user_id: int) -> tuple[int, int | None, int | None]:
     await cleanup_if_expired(user_id)
     async with db_lock:
@@ -198,57 +182,58 @@ async def db_get_credit(user_id: int) -> tuple[int, int | None, int | None]:
         row = cur.fetchone()
         if not row:
             return 0, None, None
-        return int(row[0]), (int(row[1]) if row[1] is not None else None), (int(row[2]) if row[2] is not None else None)
+        bal = int(row[0])
+        vfrom = int(row[1]) if row[1] is not None else None
+        exp = int(row[2]) if row[2] is not None else None
+        return bal, vfrom, exp
 
-
-async def db_add_credits(user_id: int, amount: int, days_valid: int | None = None) -> tuple[int, int | None, int | None]:
-    await cleanup_if_expired(user_id)
-    new_exp = None
-    if days_valid is not None and days_valid > 0:
-        new_exp = now_ts() + days_valid * 86400
-
+async def db_add_credits(user_id: int, amount: int) -> None:
     async with db_lock:
-        db.execute(
-            "INSERT OR IGNORE INTO credits(user_id, balance, valid_from, expires_at) VALUES (?, 0, NULL, NULL)",
-            (user_id,),
-        )
+        db.execute("INSERT OR IGNORE INTO credits(user_id, balance, valid_from, expires_at) VALUES (?, 0, NULL, NULL)", (user_id,))
         db.execute("UPDATE credits SET balance = balance + ? WHERE user_id=?", (amount, user_id))
-
-        if new_exp is not None:
-            db.execute("UPDATE credits SET valid_from = COALESCE(valid_from, ?) WHERE user_id=?", (now_ts(), user_id))
-            cur = db.execute("SELECT expires_at FROM credits WHERE user_id=?", (user_id,))
-            row = cur.fetchone()
-            cur_exp = int(row[0]) if row and row[0] is not None else 0
-            db.execute("UPDATE credits SET expires_at=? WHERE user_id=?", (max(cur_exp, new_exp), user_id))
-
         db.commit()
 
-    return await db_get_credit(user_id)
+async def db_remove_credits(user_id: int, amount: int) -> None:
+    async with db_lock:
+        db.execute("INSERT OR IGNORE INTO credits(user_id, balance, valid_from, expires_at) VALUES (?, 0, NULL, NULL)", (user_id,))
+        # not below 0
+        cur = db.execute("SELECT balance FROM credits WHERE user_id=?", (user_id,))
+        row = cur.fetchone()
+        bal = int(row[0]) if row else 0
+        new_bal = max(0, bal - amount)
+        db.execute("UPDATE credits SET balance=? WHERE user_id=?", (new_bal, user_id))
+        db.commit()
 
+async def db_set_validity(user_id: int, days: int) -> None:
+    start = now_ts()
+    end = start + days * 86400
+    async with db_lock:
+        db.execute("INSERT OR IGNORE INTO credits(user_id, balance, valid_from, expires_at) VALUES (?, 0, NULL, NULL)", (user_id,))
+        db.execute("UPDATE credits SET valid_from=?, expires_at=? WHERE user_id=?", (start, end, user_id))
+        db.commit()
+
+async def db_remove_validity(user_id: int) -> None:
+    async with db_lock:
+        db.execute("UPDATE credits SET valid_from=NULL, expires_at=NULL WHERE user_id=?", (user_id,))
+        db.commit()
 
 async def db_deduct_video_credit(user_id: int) -> bool:
     await cleanup_if_expired(user_id)
     async with db_lock:
         cur = db.execute("SELECT balance FROM credits WHERE user_id=?", (user_id,))
         row = cur.fetchone()
-        if not row:
-            return False
-        bal = int(row[0])
+        bal = int(row[0]) if row else 0
         if bal < CREDITS_PER_VIDEO:
             return False
         db.execute("UPDATE credits SET balance = balance - ? WHERE user_id=?", (CREDITS_PER_VIDEO, user_id))
         db.commit()
         return True
 
-
 async def freebies_is_claimed(user_id: int) -> bool:
     async with db_lock:
         cur = db.execute("SELECT claimed FROM freebies WHERE user_id=?", (user_id,))
         row = cur.fetchone()
-        if not row:
-            return False
-        return int(row[0]) == 1
-
+        return bool(row and int(row[0]) == 1)
 
 async def freebies_mark_claimed(user_id: int) -> None:
     async with db_lock:
@@ -256,20 +241,17 @@ async def freebies_mark_claimed(user_id: int) -> None:
         db.execute("UPDATE freebies SET claimed=1 WHERE user_id=?", (user_id,))
         db.commit()
 
-
 async def stats_inc_video(user_id: int) -> None:
     async with db_lock:
         db.execute("INSERT OR IGNORE INTO stats(user_id, videos_made, voices_made) VALUES (?, 0, 0)", (user_id,))
         db.execute("UPDATE stats SET videos_made = videos_made + 1 WHERE user_id=?", (user_id,))
         db.commit()
 
-
 async def stats_inc_voice(user_id: int) -> None:
     async with db_lock:
         db.execute("INSERT OR IGNORE INTO stats(user_id, videos_made, voices_made) VALUES (?, 0, 0)", (user_id,))
         db.execute("UPDATE stats SET voices_made = voices_made + 1 WHERE user_id=?", (user_id,))
         db.commit()
-
 
 async def stats_get(user_id: int) -> tuple[int, int]:
     async with db_lock:
@@ -279,6 +261,35 @@ async def stats_get(user_id: int) -> tuple[int, int]:
             return 0, 0
         return int(row[0]), int(row[1])
 
+async def list_users(limit: int = 30):
+    async with db_lock:
+        cur = db.execute(
+            "SELECT u.user_id, u.username, c.balance "
+            "FROM users u LEFT JOIN credits c ON u.user_id=c.user_id "
+            "ORDER BY u.last_seen DESC LIMIT ?",
+            (limit,),
+        )
+        rows = cur.fetchall()
+    out = []
+    for uid, username, bal in rows:
+        out.append({"id": int(uid), "username": username, "credits": int(bal or 0)})
+    return out
+
+async def list_premium_users(limit: int = 50):
+    t = now_ts()
+    async with db_lock:
+        cur = db.execute(
+            "SELECT u.user_id, u.username, c.balance, c.valid_from, c.expires_at "
+            "FROM users u JOIN credits c ON u.user_id=c.user_id "
+            "WHERE c.expires_at IS NOT NULL AND c.expires_at > ? "
+            "ORDER BY c.expires_at ASC LIMIT ?",
+            (t, limit),
+        )
+        rows = cur.fetchall()
+    out = []
+    for uid, username, bal, vfrom, exp in rows:
+        out.append({"id": int(uid), "username": username, "credits": int(bal or 0), "vfrom": vfrom, "exp": exp})
+    return out
 
 async def is_user_subscribed(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
     if not REQUIRED_CHANNEL:
@@ -288,7 +299,6 @@ async def is_user_subscribed(context: ContextTypes.DEFAULT_TYPE, user_id: int) -
         return member.status in ("creator", "administrator", "member")
     except TelegramError:
         return False
-
 
 # =========================
 # FFMPEG
@@ -303,10 +313,8 @@ async def run_cmd(cmd: list[str]) -> None:
     if proc.returncode != 0:
         raise RuntimeError(err.decode("utf-8", errors="ignore"))
 
-
 def ffmpeg_bin() -> str:
     return os.getenv("FFMPEG_PATH") or imageio_ffmpeg.get_ffmpeg_exe()
-
 
 def build_ffmpeg_video_cmd(inp: str, outp: str) -> list[str]:
     vf = (
@@ -324,7 +332,6 @@ def build_ffmpeg_video_cmd(inp: str, outp: str) -> list[str]:
         outp
     ]
 
-
 def build_ffmpeg_voice_cmd(inp: str, outp: str) -> list[str]:
     return [
         ffmpeg_bin(), "-y",
@@ -336,9 +343,8 @@ def build_ffmpeg_voice_cmd(inp: str, outp: str) -> list[str]:
         outp
     ]
 
-
 # =========================
-# FEATURES
+# USER FEATURES
 # =========================
 async def send_usage(update: Update, user_id: int):
     credits, vfrom, exp = await db_get_credit(user_id)
@@ -353,9 +359,7 @@ async def send_usage(update: Update, user_id: int):
     if vfrom is not None and exp is not None:
         lines.append(f"✅ Start: {fmt_date(vfrom)}")
         lines.append(f"⏳ End: {fmt_date(exp)}")
-
     await update.message.reply_text("\n".join(lines), reply_markup=reply_menu())
-
 
 async def do_free(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
     if not REQUIRED_CHANNEL:
@@ -375,168 +379,244 @@ async def do_free(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: i
         )
         return
 
-    await db_add_credits(user_id, FREE_CREDITS, days_valid=None)
+    await db_add_credits(user_id, FREE_CREDITS)
     await freebies_mark_claimed(user_id)
     await update.message.reply_text(f"🎁 Added {FREE_CREDITS} free credits!", reply_markup=reply_menu())
     await send_usage(update, user_id)
 
-
 # =========================
-# COMMANDS
+# ADMIN PANEL (Inline)
 # =========================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+admin_steps: dict[int, dict] = {}
+
+def admin_menu_kb() -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton("Manage Credits", callback_data="admin:credits")],
+        [InlineKeyboardButton("Manage Validity", callback_data="admin:validity")],
+        [InlineKeyboardButton("List Users", callback_data="admin:list_users")],
+        [InlineKeyboardButton("List Premium Users", callback_data="admin:list_premium")],
+        [InlineKeyboardButton("Broadcast", callback_data="admin:broadcast")],
+        [InlineKeyboardButton("Download Data", callback_data="admin:download")],
+    ]
+    return InlineKeyboardMarkup(kb)
+
+def credit_action_kb(user_id: int) -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton("➕ Add Credits", callback_data=f"admin:credits:add:{user_id}")],
+        [InlineKeyboardButton("➖ Remove Credits", callback_data=f"admin:credits:remove:{user_id}")],
+        [InlineKeyboardButton("⬅ Back", callback_data="admin:menu")],
+    ]
+    return InlineKeyboardMarkup(kb)
+
+def validity_action_kb(user_id: int) -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton("✅ Set Validity", callback_data=f"admin:validity:set:{user_id}")],
+        [InlineKeyboardButton("❌ Remove Validity", callback_data=f"admin:validity:remove:{user_id}")],
+        [InlineKeyboardButton("⬅ Back", callback_data="admin:menu")],
+    ]
+    return InlineKeyboardMarkup(kb)
+
+async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await upsert_user(update)
-    text = (
-        "✅ Welcome!\n\n"
-        "🎬 Send a video → I’ll return a Circle Video Note (max 60s)\n"
-        "🎙 Send voice/audio → I’ll return a Telegram Voice Message (FREE)\n\n"
-        f"💳 Video cost: {CREDITS_PER_VIDEO} credit\n"
-        "🎁 Free credits: /free\n"
-        "📊 Usage: press 📊 USAGE"
-    )
-    await update.message.reply_text(text, reply_markup=reply_menu())
-
-
-async def free_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await upsert_user(update)
-    await do_free(update, context, update.effective_user.id)
-
-
-# =========================
-# ADMIN PANEL
-# =========================
-async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await upsert_user(update)
-    admin_id = update.effective_user.id
-    if admin_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ Admin only.", reply_markup=reply_menu())
+    uid = update.effective_user.id
+    if not is_admin(uid):
         return
+    await update.message.reply_text("⚙️ Admin Panel", reply_markup=admin_menu_kb())
 
-    async with db_lock:
-        cur = db.execute("SELECT user_id, username, first_name FROM users ORDER BY last_seen DESC LIMIT 12")
-        rows = cur.fetchall()
-
-    if not rows:
-        await update.message.reply_text("No users yet.", reply_markup=reply_menu())
-        return
-
-    kb = []
-    for uid, username, first_name in rows:
-        label = f"{uid}"
-        if username:
-            label += f"  @{username}"
-        elif first_name:
-            label += f"  {first_name}"
-        kb.append([InlineKeyboardButton(label, callback_data=f"SEL:{uid}")])
-
-    await update.message.reply_text("Select a user:", reply_markup=InlineKeyboardMarkup(kb))
-
-
-async def grant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await upsert_user(update)
-    admin_id = update.effective_user.id
-    if admin_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ Admin only.", reply_markup=reply_menu())
-        return
-
-    if admin_id not in ADMIN_SELECTED:
-        await update.message.reply_text("First /users দিয়ে user select করুন।", reply_markup=reply_menu())
-        return
-
-    if len(context.args) < 1:
-        await update.message.reply_text("Use: /grant <amount> <days(optional)>\nExample: /grant 10 30", reply_markup=reply_menu())
-        return
-
-    try:
-        amount = int(context.args[0])
-        days = int(context.args[1]) if len(context.args) >= 2 else None
-    except ValueError:
-        await update.message.reply_text("amount/days must be numbers.", reply_markup=reply_menu())
-        return
-
-    uid = ADMIN_SELECTED[admin_id]
-    await db_add_credits(uid, amount, days_valid=days)
-
-    await update.message.reply_text(
-        f"✅ Granted user: {uid}\n💳 Credits added: {amount}",
-        reply_markup=reply_menu()
-    )
-
-
-async def grantto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await upsert_user(update)
-    admin_id = update.effective_user.id
-    if admin_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ Admin only.", reply_markup=reply_menu())
-        return
-
-    if len(context.args) < 2:
-        await update.message.reply_text("Use: /grantto <user_id> <amount> <days(optional)>", reply_markup=reply_menu())
-        return
-
-    try:
-        uid = int(context.args[0])
-        amount = int(context.args[1])
-        days = int(context.args[2]) if len(context.args) >= 3 else None
-    except ValueError:
-        await update.message.reply_text("user_id/amount/days must be numbers.", reply_markup=reply_menu())
-        return
-
-    await db_add_credits(uid, amount, days_valid=days)
-    await update.message.reply_text(
-        f"✅ Granted user: {uid}\n💳 Credits added: {amount}",
-        reply_markup=reply_menu()
-    )
-
-
-async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q:
         return
     await q.answer()
 
-    admin_id = q.from_user.id
-    if admin_id not in ADMIN_IDS:
-        await q.edit_message_text("Admin only.")
+    uid = q.from_user.id
+    if not is_admin(uid):
         return
 
-    data = q.data or ""
-    if data.startswith("SEL:"):
-        uid = int(data.split(":", 1)[1])
-        ADMIN_SELECTED[admin_id] = uid
-        credits, vfrom, exp = await db_get_credit(uid)
-        videos, voices = await stats_get(uid)
+    parts = (q.data or "").split(":")
+    # admin:<section>...
+    section = parts[1] if len(parts) > 1 else ""
 
-        msg = f"Selected: {uid}\n💳 Credits: {credits}\n🎬 Videos: {videos}\n🎧 Voices: {voices}"
-        if vfrom is not None and exp is not None:
-            msg += f"\n✅ Start: {fmt_date(vfrom)}\n⏳ End: {fmt_date(exp)}"
-        msg += "\n\nNow use:\n/grant 10 30   or   /grant 5"
-        await q.edit_message_text(msg)
+    if section == "menu":
+        await q.message.reply_text("⚙️ Admin Panel", reply_markup=admin_menu_kb())
+        return
 
+    if section == "credits" and len(parts) == 2:
+        admin_steps[uid] = {"action": "credits_pick_user"}
+        await q.message.reply_text("Send User ID for credits:")
+        return
+
+    if section == "credits" and len(parts) >= 4 and parts[2] in ("add", "remove"):
+        action = parts[2]
+        target = int(parts[3])
+        admin_steps[uid] = {"action": f"credits_{action}_amount", "target": target}
+        await q.message.reply_text(f"Send amount to {action.upper()} for {target}:")
+        return
+
+    if section == "validity" and len(parts) == 2:
+        admin_steps[uid] = {"action": "validity_pick_user"}
+        await q.message.reply_text("Send User ID for validity:")
+        return
+
+    if section == "validity" and len(parts) >= 4 and parts[2] in ("set", "remove"):
+        target = int(parts[3])
+        if parts[2] == "remove":
+            await db_remove_validity(target)
+            await q.message.reply_text(f"✅ Validity removed for {target}")
+            return
+        admin_steps[uid] = {"action": "validity_days", "target": target}
+        await q.message.reply_text(f"Send validity days for {target}:")
+        return
+
+    if section == "list_users":
+        users = await list_users(limit=30)
+        text = "\n".join([f"{u['id']} @{u.get('username') or 'unknown'} | credits={u['credits']}" for u in users])
+        await q.message.reply_text(text or "No users")
+        return
+
+    if section == "list_premium":
+        users = await list_premium_users(limit=50)
+        if not users:
+            await q.message.reply_text("No premium users")
+            return
+        lines = []
+        for u in users:
+            lines.append(
+                f"👤 {u['id']} @{u.get('username') or 'unknown'}\n"
+                f"💳 Credits: {u['credits']}\n"
+                f"✅ Start: {fmt_date(int(u['vfrom'])) if u['vfrom'] else 'N/A'}\n"
+                f"⏳ End: {fmt_date(int(u['exp'])) if u['exp'] else 'N/A'}\n"
+                f"----------------------"
+            )
+        await q.message.reply_text("\n".join(lines))
+        return
+
+    if section == "broadcast":
+        admin_steps[uid] = {"action": "broadcast"}
+        await q.message.reply_text("Send broadcast message:")
+        return
+
+    if section == "download":
+        try:
+            with open(DB_PATH, "rb") as f:
+                await context.bot.send_document(chat_id=q.message.chat.id, document=f)
+        except Exception:
+            await q.message.reply_text("DB not found!")
+        return
+
+async def admin_step_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await upsert_user(update)
+    msg = update.message
+    if not msg:
+        return
+    uid = msg.from_user.id
+    if uid not in admin_steps:
+        return
+    if not is_admin(uid):
+        admin_steps.pop(uid, None)
+        return
+
+    step = admin_steps.pop(uid)
+    action = step.get("action")
+
+    try:
+        if action == "credits_pick_user":
+            target = parse_int(msg.text)
+            await msg.reply_text(
+                f"User {target}\nChoose credits action:",
+                reply_markup=credit_action_kb(target),
+            )
+            return
+
+        if action == "credits_add_amount":
+            amount = parse_int(msg.text)
+            target = int(step.get("target"))
+            await db_add_credits(target, amount)
+            await msg.reply_text(f"✅ Added {amount} credits to {target}")
+            return
+
+        if action == "credits_remove_amount":
+            amount = parse_int(msg.text)
+            target = int(step.get("target"))
+            await db_remove_credits(target, amount)
+            await msg.reply_text(f"✅ Removed {amount} credits from {target}")
+            return
+
+        if action == "validity_pick_user":
+            target = parse_int(msg.text)
+            await msg.reply_text(
+                f"User {target}\nChoose validity action:",
+                reply_markup=validity_action_kb(target),
+            )
+            return
+
+        if action == "validity_days":
+            days = parse_int(msg.text)
+            target = int(step.get("target"))
+            await db_set_validity(target, days)
+            await msg.reply_text(f"✅ Validity set: {days} days for {target}")
+            return
+
+        if action == "broadcast":
+            text = (msg.text or "").strip()
+            users = await list_users(limit=100000)
+            sent = 0
+            failed = 0
+            await msg.reply_text("📣 Broadcast started...")
+
+            for u in users:
+                uid2 = u.get("id")
+                if not uid2:
+                    continue
+                try:
+                    await context.bot.send_message(chat_id=uid2, text=text)
+                    sent += 1
+                    await asyncio.sleep(0.05)
+                except Exception:
+                    failed += 1
+                    await asyncio.sleep(0.2)
+
+            await msg.reply_text(f"📣 Broadcast finished.\n✅ Sent: {sent}\n❌ Failed: {failed}")
+            return
+
+    except Exception as e:
+        await msg.reply_text(f"❌ Error: {e}")
 
 # =========================
-# MENU BUTTON HANDLER
+# BOT COMMANDS & HANDLERS
 # =========================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await upsert_user(update)
+    uid = update.effective_user.id
+    text = (
+        f"✅ Welcome!\n\n"
+        f"🆔 Your ID: {uid}\n\n"
+        f"🎬 Send a video → I’ll return Circle Video Note (max 60s)\n"
+        f"🎙 Send voice/audio → I’ll return Voice Message (FREE)\n\n"
+        f"💳 Video cost: {CREDITS_PER_VIDEO} credit\n"
+        f"🎁 Free credits: /free\n"
+        f"📊 Usage: press 📊 USAGE"
+    )
+    await update.message.reply_text(text, reply_markup=reply_menu())
+
+async def free_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await upsert_user(update)
+    await do_free(update, context, update.effective_user.id)
+
 async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await upsert_user(update)
     txt = (update.message.text or "").strip()
 
     if txt == BTN_MODEL:
-        await update.message.reply_text(
-            "🧠 MODEL SUPPORT\n👇 Click to open:",
-            reply_markup=model_inline_kb()
-        )
+        await update.message.reply_text("🧠 MODEL SUPPORT\n👇 Click to open:", reply_markup=model_inline_kb())
         return
 
     if txt == BTN_VOICE:
-        await update.message.reply_text(
-            "🎙 VOICE SUPPORT\n👇 Click to open:",
-            reply_markup=voice_inline_kb()
-        )
+        await update.message.reply_text("🎙 VOICE SUPPORT\n👇 Click to open:", reply_markup=voice_inline_kb())
         return
 
-    if txt == BTN_ADMIN:
-        kb = admin_inline_kb()
+    if txt == BTN_ADMIN_CONTACT:
+        kb = admin_contact_inline_kb()
         if kb:
             await update.message.reply_text("🧑‍💼 ADMIN CONTACT\n👇 Click:", reply_markup=kb)
         else:
@@ -556,7 +636,6 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text("Menu থেকে অপশন সিলেক্ট করুন।", reply_markup=reply_menu())
-
 
 # =========================
 # VIDEO (PAID)
@@ -608,7 +687,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await db_add_credits(user_id, CREDITS_PER_VIDEO)  # refund
             await msg.reply_text(f"Convert error: {e}", reply_markup=reply_menu())
 
-
 # =========================
 # VOICE (FREE)
 # =========================
@@ -652,7 +730,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await msg.reply_text(f"Voice convert error: {e}", reply_markup=reply_menu())
 
-
 # =========================
 # MAIN
 # =========================
@@ -660,21 +737,20 @@ def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN env var সেট করুন।")
     if REQUIRED_CHANNEL and not REQUIRED_CHANNEL.startswith("@"):
-        raise RuntimeError("REQUIRED_CHANNEL অবশ্যই @ দিয়ে শুরু (যেমন @MyChannel)")
+        raise RuntimeError("REQUIRED_CHANNEL অবশ্যই @ দিয়ে শুরু (যেমন @iuo82828)")
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Commands
+    # User commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("free", free_cmd))
 
-    # Admin
-    app.add_handler(CommandHandler("users", users_cmd))
-    app.add_handler(CommandHandler("grant", grant_cmd))
-    app.add_handler(CommandHandler("grantto", grantto_cmd))
-    app.add_handler(CallbackQueryHandler(on_callback))
+    # Admin panel
+    app.add_handler(CommandHandler("admin", admin_cmd))
+    app.add_handler(CallbackQueryHandler(admin_cb, pattern=r"^admin:"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_step_handler))
 
-    # Reply keyboard clicks
+    # Menu clicks
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_click))
 
     # Media
@@ -682,7 +758,6 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.AUDIO, handle_voice))
 
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
