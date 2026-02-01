@@ -39,23 +39,24 @@ DB_PATH = os.getenv("DB_PATH", "credits.db")
 CREDITS_PER_VIDEO = int(os.getenv("CREDITS_PER_VIDEO", "1"))
 FREE_CREDITS = int(os.getenv("FREE_CREDITS", "2"))
 
-REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "").strip()      # e.g. "@YourMainChannel"
-VOICE_SUPPORT_LINK = os.getenv("VOICE_SUPPORT_LINK", "").strip()  # e.g. "@VoiceChannel" or https://t.me/...
-ADMIN_CONTACTS = os.getenv("ADMIN_CONTACTS", "").strip()          # e.g. "https://t.me/AriyanFix,@admin2"
+REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "").strip()  # e.g. "@YourChannel"
+VOICE_SUPPORT_LINK = os.getenv("VOICE_SUPPORT_LINK", "https://t.me/ariyanvoice").strip()
+MODEL_SUPPORT_LINK = os.getenv("MODEL_SUPPORT_LINK", "https://modelboxbd.com").strip()
+ADMIN_CONTACTS = os.getenv("ADMIN_CONTACTS", "").strip()  # e.g. "https://t.me/AriyanFix,@admin2"
 
 ADMIN_IDS = set()
 _admin_raw = os.getenv("ADMIN_IDS", "").strip()
 if _admin_raw:
     ADMIN_IDS = {int(x.strip()) for x in _admin_raw.split(",") if x.strip().isdigit()}
 
-# Admin selected user (admin_id -> selected_user_id)
 ADMIN_SELECTED: dict[int, int] = {}
 
-# Reply keyboard labels (2x2 like screenshot)
+# Reply keyboard labels (5 buttons)
 BTN_MODEL = "🧠 MODEL SUPPORT"
 BTN_VOICE = "🎙 VOICE SUPPORT"
 BTN_ADMIN = "🧑‍💼 ADMIN CONTACT"
 BTN_CHANNEL = "📣 CHANNEL"
+BTN_USAGE = "📊 USAGE"
 
 # =========================
 # DB
@@ -96,22 +97,27 @@ def fmt_date(ts: int) -> str:
 
 
 def reply_menu() -> ReplyKeyboardMarkup:
+    # 5 buttons layout
     keyboard = [
         [BTN_MODEL, BTN_VOICE],
         [BTN_ADMIN, BTN_CHANNEL],
+        [BTN_USAGE],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
-def to_tme_url(x: str) -> str:
+def to_url(x: str) -> str:
     x = (x or "").strip()
     if not x:
         return ""
-    if x.startswith("http"):
+    if x.startswith("http://") or x.startswith("https://"):
         return x
     if x.startswith("@"):
         return f"https://t.me/{x.lstrip('@')}"
-    return f"https://t.me/{x}"
+    # if it's domain like modelboxbd.com
+    if "." in x and " " not in x:
+        return f"https://{x}"
+    return x
 
 
 def parse_links(raw: str) -> list[str]:
@@ -119,18 +125,14 @@ def parse_links(raw: str) -> list[str]:
         return []
     out = []
     for part in raw.split(","):
-        u = to_tme_url(part)
+        u = to_url(part)
         if u:
             out.append(u)
     return out
 
 
 def channel_url() -> str:
-    return to_tme_url(REQUIRED_CHANNEL) if REQUIRED_CHANNEL else ""
-
-
-def voice_support_url() -> str:
-    return to_tme_url(VOICE_SUPPORT_LINK) if VOICE_SUPPORT_LINK else ""
+    return to_url(REQUIRED_CHANNEL) if REQUIRED_CHANNEL else ""
 
 
 def admin_inline_kb() -> InlineKeyboardMarkup | None:
@@ -148,11 +150,14 @@ def channel_inline_kb() -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup([[InlineKeyboardButton("📣 Open Channel", url=url)]])
 
 
-def voice_inline_kb() -> InlineKeyboardMarkup | None:
-    url = voice_support_url()
-    if not url:
-        return None
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🎙 Voice Support Channel", url=url)]])
+def voice_inline_kb() -> InlineKeyboardMarkup:
+    url = to_url(VOICE_SUPPORT_LINK)
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🎙 Open Voice Support", url=url)]])
+
+
+def model_inline_kb() -> InlineKeyboardMarkup:
+    url = to_url(MODEL_SUPPORT_LINK)
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🧠 Open Model Support", url=url)]])
 
 
 async def upsert_user(update: Update) -> None:
@@ -333,16 +338,17 @@ def build_ffmpeg_voice_cmd(inp: str, outp: str) -> list[str]:
 
 
 # =========================
-# USER TEXTS
+# FEATURES
 # =========================
-async def send_status(update: Update, user_id: int):
+async def send_usage(update: Update, user_id: int):
     credits, vfrom, exp = await db_get_credit(user_id)
     videos, voices = await stats_get(user_id)
 
     lines = [
-        f"💳 Credits: {credits}",
+        "📊 USAGE",
         f"🎬 Videos made: {videos}",
         f"🎧 Voices made: {voices}",
+        f"💳 Credits: {credits}",
     ]
     if vfrom is not None and exp is not None:
         lines.append(f"✅ Start: {fmt_date(vfrom)}")
@@ -358,7 +364,7 @@ async def do_free(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: i
 
     if await freebies_is_claimed(user_id):
         await update.message.reply_text("✅ You already claimed free credits.", reply_markup=reply_menu())
-        await send_status(update, user_id)
+        await send_usage(update, user_id)
         return
 
     if not await is_user_subscribed(context, user_id):
@@ -372,7 +378,7 @@ async def do_free(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: i
     await db_add_credits(user_id, FREE_CREDITS, days_valid=None)
     await freebies_mark_claimed(user_id)
     await update.message.reply_text(f"🎁 Added {FREE_CREDITS} free credits!", reply_markup=reply_menu())
-    await send_status(update, user_id)
+    await send_usage(update, user_id)
 
 
 # =========================
@@ -383,17 +389,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "✅ Welcome!\n\n"
         "🎬 Send a video → I’ll return a Circle Video Note (max 60s)\n"
-        "🎙 Voice Support button → opens our Voice Channel\n\n"
+        "🎙 Send voice/audio → I’ll return a Telegram Voice Message (FREE)\n\n"
         f"💳 Video cost: {CREDITS_PER_VIDEO} credit\n"
         "🎁 Free credits: /free\n"
-        "📊 Status: /status"
+        "📊 Usage: press 📊 USAGE"
     )
     await update.message.reply_text(text, reply_markup=reply_menu())
-
-
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await upsert_user(update)
-    await send_status(update, update.effective_user.id)
 
 
 async def free_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -407,7 +408,7 @@ async def free_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await upsert_user(update)
     admin_id = update.effective_user.id
-    if not is_admin(admin_id):
+    if admin_id not in ADMIN_IDS:
         await update.message.reply_text("⛔ Admin only.", reply_markup=reply_menu())
         return
 
@@ -434,7 +435,7 @@ async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def grant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await upsert_user(update)
     admin_id = update.effective_user.id
-    if not is_admin(admin_id):
+    if admin_id not in ADMIN_IDS:
         await update.message.reply_text("⛔ Admin only.", reply_markup=reply_menu())
         return
 
@@ -454,18 +455,18 @@ async def grant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     uid = ADMIN_SELECTED[admin_id]
-    _, vfrom, exp = await db_add_credits(uid, amount, days_valid=days)
+    await db_add_credits(uid, amount, days_valid=days)
 
-    msg = f"✅ Granted user: {uid}\n💳 Credits added: {amount}"
-    if vfrom is not None and exp is not None:
-        msg += f"\n✅ Start: {fmt_date(vfrom)}\n⏳ End: {fmt_date(exp)}"
-    await update.message.reply_text(msg, reply_markup=reply_menu())
+    await update.message.reply_text(
+        f"✅ Granted user: {uid}\n💳 Credits added: {amount}",
+        reply_markup=reply_menu()
+    )
 
 
 async def grantto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await upsert_user(update)
     admin_id = update.effective_user.id
-    if not is_admin(admin_id):
+    if admin_id not in ADMIN_IDS:
         await update.message.reply_text("⛔ Admin only.", reply_markup=reply_menu())
         return
 
@@ -481,12 +482,11 @@ async def grantto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("user_id/amount/days must be numbers.", reply_markup=reply_menu())
         return
 
-    _, vfrom, exp = await db_add_credits(uid, amount, days_valid=days)
-
-    msg = f"✅ Granted user: {uid}\n💳 Credits added: {amount}"
-    if vfrom is not None and exp is not None:
-        msg += f"\n✅ Start: {fmt_date(vfrom)}\n⏳ End: {fmt_date(exp)}"
-    await update.message.reply_text(msg, reply_markup=reply_menu())
+    await db_add_credits(uid, amount, days_valid=days)
+    await update.message.reply_text(
+        f"✅ Granted user: {uid}\n💳 Credits added: {amount}",
+        reply_markup=reply_menu()
+    )
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -496,7 +496,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
 
     admin_id = q.from_user.id
-    if not is_admin(admin_id):
+    if admin_id not in ADMIN_IDS:
         await q.edit_message_text("Admin only.")
         return
 
@@ -504,7 +504,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("SEL:"):
         uid = int(data.split(":", 1)[1])
         ADMIN_SELECTED[admin_id] = uid
-
         credits, vfrom, exp = await db_get_credit(uid)
         videos, voices = await stats_get(uid)
 
@@ -523,34 +522,23 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (update.message.text or "").strip()
 
     if txt == BTN_MODEL:
-        msg = (
-            "🧠 MODEL SUPPORT\n\n"
-            "✅ Video → Circle Video Note (max 60s)\n\n"
-            f"💳 Video cost: {CREDITS_PER_VIDEO} credit\n"
-            "🎁 Free credits: /free\n"
-            "📊 Status: /status"
+        await update.message.reply_text(
+            "🧠 MODEL SUPPORT\n👇 Click to open:",
+            reply_markup=model_inline_kb()
         )
-        await update.message.reply_text(msg, reply_markup=reply_menu())
         return
 
     if txt == BTN_VOICE:
-        kb = voice_inline_kb()
-        if kb:
-            await update.message.reply_text(
-                "🎙 VOICE SUPPORT\n\n👇 Voice Channel এ যেতে বাটনে ক্লিক করুন:",
-                reply_markup=kb
-            )
-        else:
-            await update.message.reply_text(
-                "VOICE_SUPPORT_LINK সেট করা নেই।",
-                reply_markup=reply_menu()
-            )
+        await update.message.reply_text(
+            "🎙 VOICE SUPPORT\n👇 Click to open:",
+            reply_markup=voice_inline_kb()
+        )
         return
 
     if txt == BTN_ADMIN:
         kb = admin_inline_kb()
         if kb:
-            await update.message.reply_text("🧑‍💼 ADMIN CONTACT", reply_markup=kb)
+            await update.message.reply_text("🧑‍💼 ADMIN CONTACT\n👇 Click:", reply_markup=kb)
         else:
             await update.message.reply_text("ADMIN_CONTACTS সেট করা নেই।", reply_markup=reply_menu())
         return
@@ -558,9 +546,13 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if txt == BTN_CHANNEL:
         kb = channel_inline_kb()
         if kb:
-            await update.message.reply_text("📣 CHANNEL", reply_markup=kb)
+            await update.message.reply_text("📣 CHANNEL\n👇 Click:", reply_markup=kb)
         else:
             await update.message.reply_text("REQUIRED_CHANNEL সেট করা নেই।", reply_markup=reply_menu())
+        return
+
+    if txt == BTN_USAGE:
+        await send_usage(update, update.effective_user.id)
         return
 
     await update.message.reply_text("Menu থেকে অপশন সিলেক্ট করুন।", reply_markup=reply_menu())
@@ -674,7 +666,6 @@ def main():
 
     # Commands
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("free", free_cmd))
 
     # Admin
