@@ -44,8 +44,7 @@ MODEL_SUPPORT_LINK = os.getenv("MODEL_SUPPORT_LINK", "https://modelboxbd.com").s
 ADMIN_CONTACTS = os.getenv("ADMIN_CONTACTS", "https://t.me/AriyanFix").strip()
 
 # =========================
-# ADMIN (IMPORTANT)
-# OWNER_ID works automatically
+# ADMIN (OWNER_ID always admin)
 # =========================
 ADMIN_IDS = set()
 
@@ -53,7 +52,7 @@ _admin_raw = os.getenv("ADMIN_IDS", "").strip()
 if _admin_raw:
     ADMIN_IDS.update({int(x.strip()) for x in _admin_raw.split(",") if x.strip().isdigit()})
 
-OWNER_ID = os.getenv("OWNER_ID", "").strip()  # you already have this in Railway
+OWNER_ID = os.getenv("OWNER_ID", "").strip()
 if OWNER_ID.isdigit():
     ADMIN_IDS.add(int(OWNER_ID))
 
@@ -66,8 +65,10 @@ def now_ts() -> int:
     return int(time.time())
 
 
-def fmt_date(ts: int) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%A, %d %b %Y")
+def fmt_date(ts: int | None) -> str:
+    if ts is None:
+        return "N/A"
+    return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%A, %d %b %Y")
 
 
 def parse_int(text: str) -> int:
@@ -75,31 +76,6 @@ def parse_int(text: str) -> int:
     if not nums:
         raise ValueError("No number found")
     return int(nums[0])
-
-
-# =========================
-# UI: MENU
-# =========================
-BTN_MODEL = "🧠 MODEL SUPPORT"
-BTN_VOICE = "🎙 VOICE SUPPORT"
-BTN_ADMIN_CONTACT = "🧑‍💼 ADMIN CONTACT"
-BTN_CHANNEL = "📣 CHANNEL"
-BTN_USAGE = "📊 USAGE"
-
-BTN_MODEL_ALT = "MODEL SUPPORT"
-BTN_VOICE_ALT = "VOICE SUPPORT"
-BTN_ADMIN_ALT = "ADMIN CONTACT"
-BTN_CHANNEL_ALT = "CHANNEL"
-BTN_USAGE_ALT = "USAGE"
-
-
-def reply_menu() -> ReplyKeyboardMarkup:
-    keyboard = [
-        [BTN_MODEL, BTN_VOICE],
-        [BTN_ADMIN_CONTACT, BTN_CHANNEL],
-        [BTN_USAGE],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
 def to_url(x: str) -> str:
@@ -124,6 +100,34 @@ def parse_links(raw: str) -> list[str]:
         if u:
             out.append(u)
     return out
+
+
+# =========================
+# UI: MENU
+# =========================
+BTN_MODEL = "🧠 MODEL SUPPORT"
+BTN_VOICE = "🎙 VOICE SUPPORT"
+BTN_ADMIN_CONTACT = "🧑‍💼 ADMIN CONTACT"
+BTN_CHANNEL = "📣 CHANNEL"
+BTN_USAGE = "📊 USAGE"
+BTN_ADMIN_PANEL = "⚙️ ADMIN PANEL"
+
+# older text fallback
+BTN_MODEL_ALT = "MODEL SUPPORT"
+BTN_VOICE_ALT = "VOICE SUPPORT"
+BTN_ADMIN_ALT = "ADMIN CONTACT"
+BTN_CHANNEL_ALT = "CHANNEL"
+BTN_USAGE_ALT = "USAGE"
+BTN_ADMIN_PANEL_ALT = "ADMIN PANEL"
+
+
+def reply_menu() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [BTN_MODEL, BTN_VOICE],
+        [BTN_ADMIN_CONTACT, BTN_CHANNEL],
+        [BTN_USAGE, BTN_ADMIN_PANEL],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
 def kb_url_button(title: str, url: str) -> InlineKeyboardMarkup:
@@ -206,7 +210,7 @@ async def cleanup_if_expired(user_id: int) -> None:
             db.commit()
 
 
-async def db_get_credit(user_id: int) -> tuple[int, int | None, int | None]:
+async def db_get_credit(user_id: int):
     await ensure_user(user_id)
     await cleanup_if_expired(user_id)
     async with db_lock:
@@ -214,20 +218,17 @@ async def db_get_credit(user_id: int) -> tuple[int, int | None, int | None]:
         row = cur.fetchone()
         if not row:
             return 0, None, None
-        bal = int(row[0])
-        vfrom = int(row[1]) if row[1] is not None else None
-        exp = int(row[2]) if row[2] is not None else None
-        return bal, vfrom, exp
+        return int(row[0]), row[1], row[2]
 
 
-async def db_add_credits(user_id: int, amount: int) -> None:
+async def db_add_credits(user_id: int, amount: int):
     await ensure_user(user_id)
     async with db_lock:
         db.execute("UPDATE credits SET balance = balance + ? WHERE user_id=?", (amount, user_id))
         db.commit()
 
 
-async def db_remove_credits(user_id: int, amount: int) -> None:
+async def db_remove_credits(user_id: int, amount: int):
     await ensure_user(user_id)
     async with db_lock:
         cur = db.execute("SELECT balance FROM credits WHERE user_id=?", (user_id,))
@@ -238,7 +239,7 @@ async def db_remove_credits(user_id: int, amount: int) -> None:
         db.commit()
 
 
-async def db_set_validity(user_id: int, days: int) -> None:
+async def db_set_validity(user_id: int, days: int):
     await ensure_user(user_id)
     start = now_ts()
     end = start + days * 86400
@@ -247,7 +248,7 @@ async def db_set_validity(user_id: int, days: int) -> None:
         db.commit()
 
 
-async def db_remove_validity(user_id: int) -> None:
+async def db_remove_validity(user_id: int):
     await ensure_user(user_id)
     async with db_lock:
         db.execute("UPDATE credits SET valid_from=NULL, expires_at=NULL WHERE user_id=?", (user_id,))
@@ -276,28 +277,28 @@ async def freebies_is_claimed(user_id: int) -> bool:
         return bool(row and int(row[0]) == 1)
 
 
-async def freebies_mark_claimed(user_id: int) -> None:
+async def freebies_mark_claimed(user_id: int):
     await ensure_user(user_id)
     async with db_lock:
         db.execute("UPDATE freebies SET claimed=1 WHERE user_id=?", (user_id,))
         db.commit()
 
 
-async def stats_inc_video(user_id: int) -> None:
+async def stats_inc_video(user_id: int):
     await ensure_user(user_id)
     async with db_lock:
         db.execute("UPDATE stats SET videos_made = videos_made + 1 WHERE user_id=?", (user_id,))
         db.commit()
 
 
-async def stats_inc_voice(user_id: int) -> None:
+async def stats_inc_voice(user_id: int):
     await ensure_user(user_id)
     async with db_lock:
         db.execute("UPDATE stats SET voices_made = voices_made + 1 WHERE user_id=?", (user_id,))
         db.commit()
 
 
-async def stats_get(user_id: int) -> tuple[int, int]:
+async def stats_get(user_id: int):
     await ensure_user(user_id)
     async with db_lock:
         cur = db.execute("SELECT videos_made, voices_made FROM stats WHERE user_id=?", (user_id,))
@@ -307,19 +308,28 @@ async def stats_get(user_id: int) -> tuple[int, int]:
         return int(row[0]), int(row[1])
 
 
-async def list_users(limit: int = 50):
+async def list_users(offset: int = 0, limit: int = 10):
     async with db_lock:
         cur = db.execute(
-            "SELECT u.user_id, u.username, COALESCE(c.balance,0) "
+            "SELECT u.user_id, u.username, COALESCE(c.balance,0), c.valid_from, c.expires_at "
             "FROM users u LEFT JOIN credits c ON u.user_id=c.user_id "
-            "ORDER BY u.last_seen DESC LIMIT ?",
-            (limit,),
+            "ORDER BY u.last_seen DESC LIMIT ? OFFSET ?",
+            (limit, offset),
         )
         rows = cur.fetchall()
-    return [{"id": int(uid), "username": username, "credits": int(bal or 0)} for uid, username, bal in rows]
+    out = []
+    for uid, username, bal, vfrom, exp in rows:
+        out.append({"id": int(uid), "username": username, "credits": int(bal or 0), "vfrom": vfrom, "exp": exp})
+    return out
 
 
-async def list_premium_users(limit: int = 50):
+async def count_users() -> int:
+    async with db_lock:
+        cur = db.execute("SELECT COUNT(*) FROM users")
+        return int(cur.fetchone()[0])
+
+
+async def list_premium(limit: int = 50):
     t = now_ts()
     async with db_lock:
         cur = db.execute(
@@ -330,8 +340,10 @@ async def list_premium_users(limit: int = 50):
             (t, limit),
         )
         rows = cur.fetchall()
-    return [{"id": int(uid), "username": username, "credits": int(bal or 0), "vfrom": vfrom, "exp": exp}
-            for uid, username, bal, vfrom, exp in rows]
+    out = []
+    for uid, username, bal, vfrom, exp in rows:
+        out.append({"id": int(uid), "username": username, "credits": int(bal or 0), "vfrom": vfrom, "exp": exp})
+    return out
 
 
 async def is_user_subscribed(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
@@ -390,35 +402,68 @@ def build_ffmpeg_voice_cmd(inp: str, outp: str) -> list[str]:
 
 
 # =========================
-# ADMIN PANEL
+# ADMIN PANEL (UI like your screenshot)
 # =========================
 admin_steps: dict[int, dict] = {}
 
 
 def admin_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Manage Credits", callback_data="admin:credits")],
-        [InlineKeyboardButton("Manage Validity", callback_data="admin:validity")],
-        [InlineKeyboardButton("List Users", callback_data="admin:list_users")],
-        [InlineKeyboardButton("List Premium Users", callback_data="admin:list_premium")],
-        [InlineKeyboardButton("Broadcast", callback_data="admin:broadcast")],
-        [InlineKeyboardButton("Download Data", callback_data="admin:download")],
+        [InlineKeyboardButton("👥 Users", callback_data="admin:users:0")],
+        [InlineKeyboardButton("⭐ Premium Users", callback_data="admin:premium")],
+        [InlineKeyboardButton("📣 Broadcast", callback_data="admin:broadcast")],
+        [InlineKeyboardButton("⬇️ Download DB", callback_data="admin:download")],
     ])
 
 
-def credit_action_kb(user_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add Credits", callback_data=f"admin:credits:add:{user_id}")],
-        [InlineKeyboardButton("➖ Remove Credits", callback_data=f"admin:credits:remove:{user_id}")],
-        [InlineKeyboardButton("⬅ Back", callback_data="admin:menu")],
-    ])
+def users_page_kb(users: list[dict], offset: int, total: int) -> InlineKeyboardMarkup:
+    rows = []
+    for u in users:
+        label = f"👤 {u['id']} ({u['credits']})"
+        if u.get("username"):
+            label = f"👤 {u['id']} @{u['username']} ({u['credits']})"
+        rows.append([InlineKeyboardButton(label[:60], callback_data=f"admin:user:{u['id']}:{offset}")])
+
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton("⬅ Prev", callback_data=f"admin:users:{max(0, offset-10)}"))
+    if offset + 10 < total:
+        nav.append(InlineKeyboardButton("Next ➡", callback_data=f"admin:users:{offset+10}"))
+    if nav:
+        rows.append(nav)
+
+    rows.append([InlineKeyboardButton("⬅ Back", callback_data="admin:menu")])
+    return InlineKeyboardMarkup(rows)
 
 
-def validity_action_kb(user_id: int) -> InlineKeyboardMarkup:
+def user_actions_kb(user_id: int, back_offset: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Set Validity", callback_data=f"admin:validity:set:{user_id}")],
-        [InlineKeyboardButton("❌ Remove Validity", callback_data=f"admin:validity:remove:{user_id}")],
-        [InlineKeyboardButton("⬅ Back", callback_data="admin:menu")],
+        [
+            InlineKeyboardButton("➕ +1", callback_data=f"admin:add:{user_id}:1:{back_offset}"),
+            InlineKeyboardButton("➕ +5", callback_data=f"admin:add:{user_id}:5:{back_offset}"),
+            InlineKeyboardButton("➕ +10", callback_data=f"admin:add:{user_id}:10:{back_offset}"),
+        ],
+        [
+            InlineKeyboardButton("➖ -1", callback_data=f"admin:rem:{user_id}:1:{back_offset}"),
+            InlineKeyboardButton("➖ -5", callback_data=f"admin:rem:{user_id}:5:{back_offset}"),
+            InlineKeyboardButton("➖ -10", callback_data=f"admin:rem:{user_id}:10:{back_offset}"),
+        ],
+        [
+            InlineKeyboardButton("✍ Custom Credit", callback_data=f"admin:custom_credit:{user_id}:{back_offset}"),
+        ],
+        [
+            InlineKeyboardButton("✅ Valid 7d", callback_data=f"admin:valid:{user_id}:7:{back_offset}"),
+            InlineKeyboardButton("✅ Valid 30d", callback_data=f"admin:valid:{user_id}:30:{back_offset}"),
+            InlineKeyboardButton("✅ Valid 90d", callback_data=f"admin:valid:{user_id}:90:{back_offset}"),
+        ],
+        [
+            InlineKeyboardButton("✍ Custom Validity", callback_data=f"admin:custom_valid:{user_id}:{back_offset}"),
+            InlineKeyboardButton("❌ Remove Validity", callback_data=f"admin:valid_remove:{user_id}:{back_offset}"),
+        ],
+        [
+            InlineKeyboardButton("⬅ Back to Users", callback_data=f"admin:users:{back_offset}"),
+            InlineKeyboardButton("🏠 Admin Menu", callback_data="admin:menu"),
+        ],
     ])
 
 
@@ -428,6 +473,21 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Admin only.", reply_markup=reply_menu())
         return
     await update.message.reply_text("⚙️ Admin Panel", reply_markup=admin_menu_kb())
+
+
+async def show_user_detail(chat_id: int, context: ContextTypes.DEFAULT_TYPE, user_id: int, back_offset: int):
+    credits, vfrom, exp = await db_get_credit(user_id)
+    videos, voices = await stats_get(user_id)
+
+    text = (
+        f"👤 User: {user_id}\n"
+        f"💳 Credits: {credits}\n"
+        f"✅ Start: {fmt_date(vfrom)}\n"
+        f"⏳ End: {fmt_date(exp)}\n"
+        f"🎬 Videos made: {videos}\n"
+        f"🎧 Voices made: {voices}\n"
+    )
+    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=user_actions_kb(user_id, back_offset))
 
 
 async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -441,68 +501,91 @@ async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     parts = (q.data or "").split(":")
-    section = parts[1] if len(parts) > 1 else ""
+    if len(parts) < 2:
+        return
 
-    if section == "menu":
+    action = parts[1]
+
+    if action == "menu":
         await q.message.reply_text("⚙️ Admin Panel", reply_markup=admin_menu_kb())
         return
 
-    if section == "credits" and len(parts) == 2:
-        admin_steps[uid] = {"action": "credits_pick_user"}
-        await q.message.reply_text("Send User ID for credits:")
+    if action == "users":
+        offset = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
+        total = await count_users()
+        users = await list_users(offset=offset, limit=10)
+        await q.message.reply_text(
+            f"👥 Users (showing {offset+1}-{min(offset+10,total)} of {total})",
+            reply_markup=users_page_kb(users, offset, total),
+        )
         return
 
-    if section == "credits" and len(parts) >= 4 and parts[2] in ("add", "remove"):
-        action = parts[2]
-        target = int(parts[3])
-        admin_steps[uid] = {"action": f"credits_{action}_amount", "target": target}
-        await q.message.reply_text(f"Send amount to {action.upper()} for {target}:")
+    if action == "user":
+        # admin:user:<uid>:<back_offset>
+        target = int(parts[2])
+        back_offset = int(parts[3]) if len(parts) >= 4 and parts[3].isdigit() else 0
+        await show_user_detail(q.message.chat.id, context, target, back_offset)
         return
 
-    if section == "validity" and len(parts) == 2:
-        admin_steps[uid] = {"action": "validity_pick_user"}
-        await q.message.reply_text("Send User ID for validity:")
+    if action in ("add", "rem", "valid"):
+        target = int(parts[2])
+        amount = int(parts[3])
+        back_offset = int(parts[4]) if len(parts) >= 5 and parts[4].isdigit() else 0
+
+        if action == "add":
+            await db_add_credits(target, amount)
+        elif action == "rem":
+            await db_remove_credits(target, amount)
+        else:
+            await db_set_validity(target, amount)  # amount is days
+
+        await show_user_detail(q.message.chat.id, context, target, back_offset)
         return
 
-    if section == "validity" and len(parts) >= 4 and parts[2] in ("set", "remove"):
-        target = int(parts[3])
-        if parts[2] == "remove":
-            await db_remove_validity(target)
-            await q.message.reply_text(f"✅ Validity removed for {target}")
-            return
-        admin_steps[uid] = {"action": "validity_days", "target": target}
-        await q.message.reply_text(f"Send validity days for {target}:")
+    if action == "valid_remove":
+        target = int(parts[2])
+        back_offset = int(parts[3]) if len(parts) >= 4 and parts[3].isdigit() else 0
+        await db_remove_validity(target)
+        await show_user_detail(q.message.chat.id, context, target, back_offset)
         return
 
-    if section == "list_users":
-        users = await list_users(limit=50)
-        text = "\n".join([f"{u['id']} @{u.get('username') or 'unknown'} | credits={u['credits']}" for u in users])
-        await q.message.reply_text(text or "No users")
+    if action == "custom_credit":
+        target = int(parts[2])
+        back_offset = int(parts[3]) if len(parts) >= 4 and parts[3].isdigit() else 0
+        admin_steps[uid] = {"type": "custom_credit", "target": target, "back": back_offset}
+        await q.message.reply_text("Send amount like: +50 or -20")
         return
 
-    if section == "list_premium":
-        users = await list_premium_users(limit=50)
+    if action == "custom_valid":
+        target = int(parts[2])
+        back_offset = int(parts[3]) if len(parts) >= 4 and parts[3].isdigit() else 0
+        admin_steps[uid] = {"type": "custom_valid", "target": target, "back": back_offset}
+        await q.message.reply_text("Send validity days (example: 30)")
+        return
+
+    if action == "premium":
+        users = await list_premium(limit=50)
         if not users:
-            await q.message.reply_text("No premium users")
+            await q.message.reply_text("No premium users right now.")
             return
         lines = []
         for u in users:
             lines.append(
-                f"👤 {u['id']} @{u.get('username') or 'unknown'}\n"
+                f"👤 User: {u['id']}\n"
                 f"💳 Credits: {u['credits']}\n"
-                f"✅ Start: {fmt_date(int(u['vfrom'])) if u['vfrom'] else 'N/A'}\n"
-                f"⏳ End: {fmt_date(int(u['exp'])) if u['exp'] else 'N/A'}\n"
+                f"✅ Start: {fmt_date(u['vfrom'])}\n"
+                f"⏳ End: {fmt_date(u['exp'])}\n"
                 f"----------------------"
             )
         await q.message.reply_text("\n".join(lines))
         return
 
-    if section == "broadcast":
-        admin_steps[uid] = {"action": "broadcast"}
-        await q.message.reply_text("Send broadcast message:")
+    if action == "broadcast":
+        admin_steps[uid] = {"type": "broadcast"}
+        await q.message.reply_text("Send broadcast message text now:")
         return
 
-    if section == "download":
+    if action == "download":
         try:
             with open(DB_PATH, "rb") as f:
                 await context.bot.send_document(chat_id=q.message.chat.id, document=f)
@@ -515,8 +598,8 @@ async def admin_step_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     msg = update.message
     if not msg:
         return
-
     uid = msg.from_user.id
+
     if uid not in admin_steps:
         return
     if not is_admin(uid):
@@ -524,62 +607,57 @@ async def admin_step_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     step = admin_steps.pop(uid)
-    action = step.get("action")
 
     try:
-        if action == "credits_pick_user":
-            target = parse_int(msg.text)
-            await ensure_user(target)
-            await msg.reply_text(f"User {target}\nChoose credits action:", reply_markup=credit_action_kb(target))
+        if step["type"] == "custom_credit":
+            target = int(step["target"])
+            back_offset = int(step["back"])
+            raw = (msg.text or "").strip()
+
+            sign = 1
+            if raw.startswith("-"):
+                sign = -1
+            amount = parse_int(raw)
+
+            if sign == 1:
+                await db_add_credits(target, amount)
+            else:
+                await db_remove_credits(target, amount)
+
+            await show_user_detail(msg.chat.id, context, target, back_offset)
             return
 
-        if action == "credits_add_amount":
-            amount = parse_int(msg.text)
-            target = int(step.get("target"))
-            await db_add_credits(target, amount)
-            await msg.reply_text(f"✅ Added {amount} credits to {target}")
-            return
-
-        if action == "credits_remove_amount":
-            amount = parse_int(msg.text)
-            target = int(step.get("target"))
-            await db_remove_credits(target, amount)
-            await msg.reply_text(f"✅ Removed {amount} credits from {target}")
-            return
-
-        if action == "validity_pick_user":
-            target = parse_int(msg.text)
-            await ensure_user(target)
-            await msg.reply_text(f"User {target}\nChoose validity action:", reply_markup=validity_action_kb(target))
-            return
-
-        if action == "validity_days":
+        if step["type"] == "custom_valid":
+            target = int(step["target"])
+            back_offset = int(step["back"])
             days = parse_int(msg.text)
-            target = int(step.get("target"))
             await db_set_validity(target, days)
-            await msg.reply_text(f"✅ Validity set: {days} days for {target}")
+            await show_user_detail(msg.chat.id, context, target, back_offset)
             return
 
-        if action == "broadcast":
+        if step["type"] == "broadcast":
             text = (msg.text or "").strip()
-            users = await list_users(limit=100000)
+            total = await count_users()
             sent = 0
             failed = 0
-            await msg.reply_text("📣 Broadcast started...")
+            await msg.reply_text(f"📣 Broadcasting to {total} users...")
 
-            for u in users:
-                uid2 = u.get("id")
-                if not uid2:
-                    continue
-                try:
-                    await context.bot.send_message(chat_id=uid2, text=text)
-                    sent += 1
-                    await asyncio.sleep(0.05)
-                except Exception:
-                    failed += 1
-                    await asyncio.sleep(0.2)
+            offset = 0
+            while True:
+                batch = await list_users(offset=offset, limit=50)
+                if not batch:
+                    break
+                for u in batch:
+                    try:
+                        await context.bot.send_message(chat_id=u["id"], text=text)
+                        sent += 1
+                        await asyncio.sleep(0.05)
+                    except Exception:
+                        failed += 1
+                        await asyncio.sleep(0.2)
+                offset += 50
 
-            await msg.reply_text(f"📣 Done.\n✅ Sent: {sent}\n❌ Failed: {failed}")
+            await msg.reply_text(f"✅ Broadcast done.\nSent: {sent}\nFailed: {failed}")
             return
 
     except Exception as e:
@@ -594,19 +672,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     text = (
         "✅ Welcome!\n\n"
-        f"🆔 Your ID: {uid}\n\n"
+        f"🆔 Your ID: {uid}\n"
         f"🎬 Video cost: {CREDITS_PER_VIDEO} credit\n"
         "🎙 Voice is FREE\n\n"
-        "🎁 Free credits: /free\n"
-        "⚙️ Admin panel: /admin (admin only)\n"
+        "🎁 Free credits: /free (join channel first)\n"
+        "⚙️ Admin panel: /admin\n"
     )
     await update.message.reply_text(text, reply_markup=reply_menu())
 
 
 async def free_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await upsert_user(update)
-
     uid = update.effective_user.id
+
     if await freebies_is_claimed(uid):
         await update.message.reply_text("✅ You already claimed free credits.", reply_markup=reply_menu())
         return
@@ -623,21 +701,18 @@ async def free_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🎁 Added {FREE_CREDITS} free credits!", reply_markup=reply_menu())
 
 
-async def usage_cmd(update: Update):
+async def send_usage(update: Update):
     uid = update.effective_user.id
     credits, vfrom, exp = await db_get_credit(uid)
     videos, voices = await stats_get(uid)
-
     lines = [
         "📊 USAGE",
         f"🎬 Videos made: {videos}",
         f"🎧 Voices made: {voices}",
         f"💳 Credits: {credits}",
+        f"✅ Start: {fmt_date(vfrom)}",
+        f"⏳ End: {fmt_date(exp)}",
     ]
-    if vfrom is not None and exp is not None:
-        lines.append(f"✅ Start: {fmt_date(vfrom)}")
-        lines.append(f"⏳ End: {fmt_date(exp)}")
-
     await update.message.reply_text("\n".join(lines), reply_markup=reply_menu())
 
 
@@ -662,7 +737,14 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if txt in (BTN_USAGE, BTN_USAGE_ALT):
-        await usage_cmd(update)
+        await send_usage(update)
+        return
+
+    if txt in (BTN_ADMIN_PANEL, BTN_ADMIN_PANEL_ALT):
+        if not is_admin(update.effective_user.id):
+            await update.message.reply_text("⛔ Admin only.", reply_markup=reply_menu())
+            return
+        await update.message.reply_text("⚙️ Admin Panel", reply_markup=admin_menu_kb())
         return
 
     await update.message.reply_text("Menu থেকে অপশন সিলেক্ট করুন।", reply_markup=reply_menu())
@@ -764,7 +846,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# MAIN (Handler order is IMPORTANT)
+# MAIN (handler order important)
 # =========================
 def main():
     if not BOT_TOKEN:
@@ -774,18 +856,21 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("free", free_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
 
+    # admin callbacks
     app.add_handler(CallbackQueryHandler(admin_cb, pattern=r"^admin:"), group=0)
 
-    # ✅ admin steps first, so menu doesn't block it
+    # admin steps must run BEFORE menu text
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_step_handler), group=0)
 
-    # ✅ menu second
+    # menu handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_click), group=1)
 
+    # media
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.AUDIO, handle_voice))
 
