@@ -3,6 +3,12 @@ import re
 from datetime import datetime, timezone
 from telebot import types
 
+# ✅ GLOBAL: bot.py fallback যেন admin-step নষ্ট না করে
+ADMIN_STEPS = {}
+
+def is_waiting(uid: int) -> bool:
+    return uid in ADMIN_STEPS
+
 
 def fmt_date(ts):
     if ts is None:
@@ -78,7 +84,7 @@ def user_actions_kb(user_id, back_offset):
     return kb
 
 
-# ---------- Send Panel (used by button + /admin) ----------
+# ---------- Send Panel ----------
 def send_admin_panel(bot, db, chat_id: int):
     total = db.count_users()
     bot.send_message(
@@ -91,12 +97,12 @@ def send_admin_panel(bot, db, chat_id: int):
 
 # ---------- Register ----------
 def register_admin_panel(bot, db, config):
-    steps = {}  # admin_id -> step dict
+    steps = ADMIN_STEPS
 
     def is_admin(uid: int) -> bool:
         return uid in config.ADMIN_IDS
 
-    # (optional) /admin still works
+    # /admin still works (optional)
     @bot.message_handler(commands=["admin"])
     def cmd_admin(message):
         db.upsert_user(message.from_user)
@@ -168,7 +174,6 @@ def register_admin_panel(bot, db, config):
             target = int(parts[2])
             back_offset = int(parts[3]) if len(parts) >= 4 and parts[3].isdigit() else 0
             db.remove_validity(target)
-
             credits, vfrom, exp = db.get_credit(target)
             usage = db.get_usage(target)
             text = (
@@ -207,6 +212,7 @@ def register_admin_panel(bot, db, config):
                 )
             return bot.send_message(call.message.chat.id, "\n".join(lines))
 
+        # ✅ BROADCAST START
         if act == "bcast":
             steps[uid] = {"type": "bcast"}
             return bot.send_message(call.message.chat.id, "Send broadcast message:")
@@ -218,7 +224,8 @@ def register_admin_panel(bot, db, config):
             except Exception:
                 return bot.send_message(call.message.chat.id, "DB not found!")
 
-    @bot.message_handler(func=lambda m: m.from_user and m.from_user.id in steps)
+    # ✅ ADMIN STEP HANDLER (broadcast/custom credit/custom validity)
+    @bot.message_handler(func=lambda m: m.from_user and m.from_user.id in steps, content_types=["text"])
     def step_handler(message):
         uid = message.from_user.id
         if not is_admin(uid):
@@ -272,6 +279,7 @@ def register_admin_panel(bot, db, config):
                 )
                 bot.send_message(message.chat.id, text, reply_markup=user_actions_kb(target, back_offset), parse_mode="HTML")
 
+            # ✅ BROADCAST SEND
             elif step["type"] == "bcast":
                 text = message.text or ""
                 user_ids = db.list_user_ids()
