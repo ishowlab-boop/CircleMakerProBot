@@ -193,7 +193,8 @@ def menu_handler(message):
     t = (message.text or "").strip()
 
     if t == BTN_MODEL:
-        return bot.send_message("".join([str(message.chat.id)]),
+        return bot.send_message(
+            message.chat.id,
             "🧠 <b>MODEL SUPPORT</b>",
             reply_markup=url_btn("Open Model Support", config.MODEL_SUPPORT_LINK),
         )
