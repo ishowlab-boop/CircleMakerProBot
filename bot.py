@@ -12,7 +12,7 @@ import imageio_ffmpeg
 
 import config
 from db import DB
-from admin_panel import register_admin_panel, send_admin_panel
+from admin_panel import register_admin_panel, send_admin_panel, is_waiting
 
 
 # =========================
@@ -141,7 +141,6 @@ def start_cmd(message):
         f"⏳ <b>End:</b> <b>{fmt_date(exp)}</b>\n\n"
         f"🎁 Free credits পেতে: আগে join করুন {config.REQUIRED_CHANNEL} তারপর /free দিন ✅\n"
     )
-
     bot.send_message(message.chat.id, text, reply_markup=menu_kb(uid))
 
 
@@ -183,19 +182,18 @@ def usage_cmd(message):
 
 
 # =========================
-# MENU HANDLER (5 + admin panel)
+# MENU HANDLER
 # =========================
 @bot.message_handler(func=lambda m: (m.text or "").strip() in {
     BTN_MODEL, BTN_VOICE, BTN_CONTACT, BTN_CHANNEL, BTN_USAGE, BTN_ADMIN_PANEL
-})
+}, content_types=["text"])
 def menu_handler(message):
     db.upsert_user(message.from_user)
     uid = message.from_user.id
     t = (message.text or "").strip()
 
     if t == BTN_MODEL:
-        return bot.send_message(
-            message.chat.id,
+        return bot.send_message("".join([str(message.chat.id)]),
             "🧠 <b>MODEL SUPPORT</b>",
             reply_markup=url_btn("Open Model Support", config.MODEL_SUPPORT_LINK),
         )
@@ -246,9 +244,8 @@ def handle_video(message):
             file_id = message.document.file_id
 
     if not file_id:
-        return  # ignore non-video docs
+        return
 
-    # deduct credits
     ok = db.deduct_for_video(uid, config.CREDITS_PER_VIDEO)
     if not ok:
         credits, _, _ = db.get_credit(uid)
@@ -268,32 +265,29 @@ def handle_video(message):
             inp = str(td / "in.mp4")
             outp = str(td / "out.mp4")
 
-            # download file
             f = bot.get_file(file_id)
             data = bot.download_file(f.file_path)
             with open(inp, "wb") as w:
                 w.write(data)
 
-            # convert
             cmd = build_ffmpeg_cmd(inp, outp)
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-            # send video note
             with open(outp, "rb") as r:
                 bot.send_video_note(message.chat.id, r, length=TARGET_SIZE)
 
         db.inc_videos(uid)
 
     except Exception as e:
-        # refund on fail
         db.add_credits(uid, config.CREDITS_PER_VIDEO)
         bot.send_message(message.chat.id, f"❌ Convert error: {e}", reply_markup=menu_kb(uid))
 
 
 # =========================
 # FALLBACK TEXT
+# ✅ IMPORTANT: admin waiting থাকলে fallback ধরবে না (broadcast ঠিক হবে)
 # =========================
-@bot.message_handler(func=lambda m: True, content_types=["text"])
+@bot.message_handler(func=lambda m: (m.content_type == "text") and (not is_waiting(m.from_user.id)))
 def fallback(message):
     db.upsert_user(message.from_user)
     uid = message.from_user.id
@@ -304,7 +298,6 @@ def fallback(message):
 # REGISTER ADMIN CALLBACKS
 # =========================
 register_admin_panel(bot, db, config)
-
 
 print("Bot started...")
 bot.infinity_polling(timeout=60, long_polling_timeout=60)
