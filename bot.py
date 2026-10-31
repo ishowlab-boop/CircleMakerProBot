@@ -1,3 +1,4 @@
+
 import os
 import tempfile
 import subprocess
@@ -7,12 +8,15 @@ from datetime import datetime, timezone
 
 import telebot
 from telebot import types
-
 import imageio_ffmpeg
 
 import config
 from db import DB
-from admin_panel import register_admin_panel, send_admin_panel, is_waiting
+from admin_panel import (
+    register_admin_panel,
+    send_admin_panel,
+    is_waiting
+)
 
 
 # =========================
@@ -21,20 +25,25 @@ from admin_panel import register_admin_panel, send_admin_panel, is_waiting
 db = DB(config.DB_PATH)
 
 if not config.BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN missing! Railway Variables এ BOT_TOKEN দিন।")
+    raise RuntimeError(
+        "BOT_TOKEN missing! Railway Variables এ BOT_TOKEN দিন।"
+    )
 
-bot = telebot.TeleBot(config.BOT_TOKEN, parse_mode="HTML")
+bot = telebot.TeleBot(
+    config.BOT_TOKEN,
+    parse_mode="HTML"
+)
 
 
 # =========================
-# MENU BUTTONS (5 + admin only)
+# MENU BUTTONS
 # =========================
 BTN_MODEL = "🧠 MODEL SUPPORT"
 BTN_VOICE = "🎙 VOICE SUPPORT"
 BTN_CONTACT = "🧑‍💼 ADMIN CONTACT"
 BTN_CHANNEL = "📣 CHANNEL"
 BTN_USAGE = "📊 USAGE"
-BTN_ADMIN_PANEL = "⚙️ ADMIN PANEL"  # শুধু admin দেখবে
+BTN_ADMIN_PANEL = "⚙️ ADMIN PANEL"
 
 
 def is_admin(uid: int) -> bool:
@@ -43,48 +52,97 @@ def is_admin(uid: int) -> bool:
 
 def safe_url(x: str) -> str:
     x = (x or "").strip()
+
     if not x:
         return ""
-    if x.startswith("http://") or x.startswith("https://"):
+
+    if x.startswith(("http://", "https://")):
         return x
+
     if x.startswith("@"):
         return "https://t.me/" + x.lstrip("@")
+
     if "." in x and " " not in x:
         return "https://" + x
+
     return x
 
 
 def url_btn(title: str, url: str):
-    mk = types.InlineKeyboardMarkup()
-    mk.add(types.InlineKeyboardButton(title, url=safe_url(url)))
-    return mk
+    kb = types.InlineKeyboardMarkup()
+    kb.add(
+        types.InlineKeyboardButton(
+            title,
+            url=safe_url(url)
+        )
+    )
+    return kb
 
 
+# =========================
+# VOICE SUPPORT MENU
+# =========================
+def voice_support_kb():
+    kb = types.InlineKeyboardMarkup(row_width=2)
+
+    kb.row(
+        types.InlineKeyboardButton(
+            "📣 Voice Channel",
+            url="https://t.me/ariyanvoice"
+        ),
+        types.InlineKeyboardButton(
+            "🤖 Voice Bot",
+            url="https://t.me/nexareal_bot"
+        )
+    )
+
+    return kb
+
+
+# =========================
+# MAIN MENU
+# =========================
 def menu_kb(uid: int):
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb = types.ReplyKeyboardMarkup(
+        resize_keyboard=True
+    )
+
     kb.row(BTN_MODEL, BTN_VOICE)
     kb.row(BTN_CONTACT, BTN_CHANNEL)
     kb.row(BTN_USAGE)
 
-    # ✅ only admin sees this
     if is_admin(uid):
         kb.row(BTN_ADMIN_PANEL)
+
     return kb
 
 
 def fmt_date(ts):
     if ts is None:
         return "N/A"
-    return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%A, %d %b %Y")
+
+    return datetime.fromtimestamp(
+        int(ts),
+        tz=timezone.utc
+    ).strftime("%A, %d %b %Y")
 
 
 # =========================
-# JOIN CHECK (for /free)
+# JOIN CHECK
 # =========================
 def is_subscribed(user_id: int) -> bool:
     try:
-        m = bot.get_chat_member(config.REQUIRED_CHANNEL, user_id)
-        return m.status in ("creator", "administrator", "member")
+        member = bot.get_chat_member(
+            config.REQUIRED_CHANNEL,
+            user_id
+        )
+
+        return member.status in (
+            "creator",
+            "administrator",
+            "member"
+        )
+
     except Exception:
         return False
 
@@ -97,77 +155,127 @@ MAX_SECONDS = 60
 
 
 def ffmpeg_path() -> str:
-    p = os.getenv("FFMPEG_PATH")
-    if p:
-        return p
-    w = shutil.which("ffmpeg")
-    if w:
-        return w
+    path = os.getenv("FFMPEG_PATH")
+
+    if path:
+        return path
+
+    system_ffmpeg = shutil.which("ffmpeg")
+
+    if system_ffmpeg:
+        return system_ffmpeg
+
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
-def build_ffmpeg_cmd(inp: str, outp: str) -> list[str]:
+def build_ffmpeg_cmd(
+    inp: str,
+    outp: str
+) -> list[str]:
+
     vf = (
-        f"scale={TARGET_SIZE}:{TARGET_SIZE}:force_original_aspect_ratio=increase,"
-        f"crop={TARGET_SIZE}:{TARGET_SIZE},format=yuv420p"
+        f"scale={TARGET_SIZE}:{TARGET_SIZE}:"
+        "force_original_aspect_ratio=increase,"
+        f"crop={TARGET_SIZE}:{TARGET_SIZE},"
+        "format=yuv420p"
     )
+
     return [
-        ffmpeg_path(), "-y",
+        ffmpeg_path(),
+        "-y",
         "-i", inp,
         "-t", str(MAX_SECONDS),
         "-vf", vf,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "96k",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "96k",
         "-movflags", "+faststart",
         outp
     ]
 
 
 # =========================
-# START / FREE / USAGE
+# START COMMAND
 # =========================
 @bot.message_handler(commands=["start"])
 def start_cmd(message):
     db.upsert_user(message.from_user)
+
     uid = message.from_user.id
     credits, vfrom, exp = db.get_credit(uid)
 
     text = (
         "✅ <b>CircleMakerProBot</b>\n\n"
         f"🆔 <b>Your ID:</b> <code>{uid}</code>\n"
-        f"🎬 <b>Video cost:</b> <b>{config.CREDITS_PER_VIDEO}</b> credit\n"
+        f"🎬 <b>Video cost:</b> "
+        f"<b>{config.CREDITS_PER_VIDEO}</b> credit\n"
         f"💳 <b>Your Credits:</b> <b>{credits}</b>\n"
         f"✅ <b>Start:</b> <b>{fmt_date(vfrom)}</b>\n"
         f"⏳ <b>End:</b> <b>{fmt_date(exp)}</b>\n\n"
-        f"🎁 Free credits পেতে: আগে join করুন {config.REQUIRED_CHANNEL} তারপর /free দিন ✅\n"
+        f"🎁 Free credits পেতে: আগে join করুন "
+        f"{config.REQUIRED_CHANNEL} তারপর /free দিন ✅\n"
     )
-    bot.send_message(message.chat.id, text, reply_markup=menu_kb(uid))
+
+    bot.send_message(
+        message.chat.id,
+        text,
+        reply_markup=menu_kb(uid)
+    )
 
 
+# =========================
+# FREE CREDITS
+# =========================
 @bot.message_handler(commands=["free"])
 def free_cmd(message):
     db.upsert_user(message.from_user)
+
     uid = message.from_user.id
 
     if db.free_claimed(uid):
-        return bot.reply_to(message, "✅ আপনি আগেই free credits নিয়েছেন।", reply_markup=menu_kb(uid))
+        return bot.reply_to(
+            message,
+            "✅ আপনি আগেই free credits নিয়েছেন।",
+            reply_markup=menu_kb(uid)
+        )
 
     if not is_subscribed(uid):
         return bot.send_message(
             message.chat.id,
-            f"🎁 Free credits পেতে আগে join করুন: {config.REQUIRED_CHANNEL}\nJoin করে আবার /free দিন।",
-            reply_markup=url_btn("📣 Join Channel", config.REQUIRED_CHANNEL),
+            f"🎁 Free credits পেতে আগে join করুন: "
+            f"{config.REQUIRED_CHANNEL}\n"
+            "Join করে আবার /free দিন।",
+            reply_markup=url_btn(
+                "📣 Join Channel",
+                config.REQUIRED_CHANNEL
+            )
         )
 
-    db.add_credits(uid, config.FREE_CREDITS)
+    db.add_credits(
+        uid,
+        config.FREE_CREDITS
+    )
+
     db.mark_free_claimed(uid)
-    bot.send_message(message.chat.id, f"🎁 Added {config.FREE_CREDITS} free credits ✅", reply_markup=menu_kb(uid))
+
+    bot.send_message(
+        message.chat.id,
+        f"🎁 Added {config.FREE_CREDITS} free credits ✅",
+        reply_markup=menu_kb(uid)
+    )
 
 
+# =========================
+# USAGE COMMAND
+# =========================
 @bot.message_handler(commands=["usage"])
 def usage_cmd(message):
     db.upsert_user(message.from_user)
+
     uid = message.from_user.id
+
     credits, vfrom, exp = db.get_credit(uid)
     made = db.get_usage(uid)
 
@@ -178,127 +286,236 @@ def usage_cmd(message):
         f"✅ Start: <b>{fmt_date(vfrom)}</b>\n"
         f"⏳ End: <b>{fmt_date(exp)}</b>\n"
     )
-    bot.send_message(message.chat.id, text, reply_markup=menu_kb(uid))
+
+    bot.send_message(
+        message.chat.id,
+        text,
+        reply_markup=menu_kb(uid)
+    )
 
 
 # =========================
 # MENU HANDLER
 # =========================
-@bot.message_handler(func=lambda m: (m.text or "").strip() in {
-    BTN_MODEL, BTN_VOICE, BTN_CONTACT, BTN_CHANNEL, BTN_USAGE, BTN_ADMIN_PANEL
-}, content_types=["text"])
+MENU_BUTTONS = {
+    BTN_MODEL,
+    BTN_VOICE,
+    BTN_CONTACT,
+    BTN_CHANNEL,
+    BTN_USAGE,
+    BTN_ADMIN_PANEL
+}
+
+
+@bot.message_handler(
+    func=lambda m: (m.text or "").strip() in MENU_BUTTONS,
+    content_types=["text"]
+)
 def menu_handler(message):
     db.upsert_user(message.from_user)
-    uid = message.from_user.id
-    t = (message.text or "").strip()
 
-    if t == BTN_MODEL:
+    uid = message.from_user.id
+    text = (message.text or "").strip()
+
+    # MODEL SUPPORT
+    if text == BTN_MODEL:
         return bot.send_message(
             message.chat.id,
             "🧠 <b>MODEL SUPPORT</b>",
-            reply_markup=url_btn("Open Model Support", config.MODEL_SUPPORT_LINK),
+            reply_markup=url_btn(
+                "Open Model Support",
+                config.MODEL_SUPPORT_LINK
+            )
         )
 
-    if t == BTN_VOICE:
+    # VOICE SUPPORT
+    if text == BTN_VOICE:
         return bot.send_message(
             message.chat.id,
-            "🎙 <b>VOICE SUPPORT</b>",
-            reply_markup=url_btn("Open Voice Support", config.VOICE_SUPPORT_LINK),
+            "🎙 <b>VOICE SUPPORT</b>\n\n"
+            "👇 Choose your option:",
+            reply_markup=voice_support_kb()
         )
 
-    if t == BTN_CONTACT:
+    # ADMIN CONTACT
+    if text == BTN_CONTACT:
         return bot.send_message(
             message.chat.id,
             "🧑‍💼 <b>ADMIN CONTACT</b>",
-            reply_markup=url_btn("Contact Admin", config.ADMIN_CONTACTS),
+            reply_markup=url_btn(
+                "Contact Admin",
+                config.ADMIN_CONTACTS
+            )
         )
 
-    if t == BTN_CHANNEL:
+    # CHANNEL
+    if text == BTN_CHANNEL:
         return bot.send_message(
             message.chat.id,
             "📣 <b>CHANNEL</b>",
-            reply_markup=url_btn("Open Channel", config.REQUIRED_CHANNEL),
+            reply_markup=url_btn(
+                "Open Channel",
+                config.REQUIRED_CHANNEL
+            )
         )
 
-    if t == BTN_USAGE:
+    # USAGE
+    if text == BTN_USAGE:
         return usage_cmd(message)
 
-    if t == BTN_ADMIN_PANEL:
+    # ADMIN PANEL
+    if text == BTN_ADMIN_PANEL:
         if not is_admin(uid):
-            return bot.reply_to(message, "⛔ Admin only.")
-        return send_admin_panel(bot, db, message.chat.id)
+            return bot.reply_to(
+                message,
+                "⛔ Admin only."
+            )
+
+        return send_admin_panel(
+            bot,
+            db,
+            message.chat.id
+        )
 
 
 # =========================
-# VIDEO HANDLER (credits required)
+# VIDEO HANDLER
 # =========================
-@bot.message_handler(content_types=["video", "document"])
+@bot.message_handler(
+    content_types=["video", "document"]
+)
 def handle_video(message):
     db.upsert_user(message.from_user)
-    uid = message.from_user.id
 
+    uid = message.from_user.id
     file_id = None
-    if message.content_type == "video" and message.video:
+
+    if (
+        message.content_type == "video"
+        and message.video
+    ):
         file_id = message.video.file_id
-    elif message.content_type == "document" and message.document:
-        if (message.document.mime_type or "").startswith("video/"):
+
+    elif (
+        message.content_type == "document"
+        and message.document
+    ):
+        mime = message.document.mime_type or ""
+
+        if mime.startswith("video/"):
             file_id = message.document.file_id
 
     if not file_id:
         return
 
-    ok = db.deduct_for_video(uid, config.CREDITS_PER_VIDEO)
+    ok = db.deduct_for_video(
+        uid,
+        config.CREDITS_PER_VIDEO
+    )
+
     if not ok:
         credits, _, _ = db.get_credit(uid)
+
         bot.send_message(
             message.chat.id,
-            f"❌ Credits কম!\n💳 Your Credits: <b>{credits}</b>\n🎬 Need: <b>{config.CREDITS_PER_VIDEO}</b>\n\n"
+            f"❌ Credits কম!\n"
+            f"💳 Your Credits: <b>{credits}</b>\n"
+            f"🎬 Need: <b>{config.CREDITS_PER_VIDEO}</b>\n\n"
             f"Join {config.REQUIRED_CHANNEL} তারপর /free",
-            reply_markup=menu_kb(uid),
+            reply_markup=menu_kb(uid)
         )
         return
 
-    bot.send_chat_action(message.chat.id, "upload_video_note")
+    bot.send_chat_action(
+        message.chat.id,
+        "upload_video_note"
+    )
 
     try:
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
+
             inp = str(td / "in.mp4")
             outp = str(td / "out.mp4")
 
-            f = bot.get_file(file_id)
-            data = bot.download_file(f.file_path)
-            with open(inp, "wb") as w:
-                w.write(data)
+            telegram_file = bot.get_file(file_id)
+            data = bot.download_file(
+                telegram_file.file_path
+            )
+
+            with open(inp, "wb") as writer:
+                writer.write(data)
 
             cmd = build_ffmpeg_cmd(inp, outp)
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-            with open(outp, "rb") as r:
-                bot.send_video_note(message.chat.id, r, length=TARGET_SIZE)
+            subprocess.run(
+                cmd,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+
+            with open(outp, "rb") as reader:
+                bot.send_video_note(
+                    message.chat.id,
+                    reader,
+                    length=TARGET_SIZE
+                )
 
         db.inc_videos(uid)
 
     except Exception as e:
-        db.add_credits(uid, config.CREDITS_PER_VIDEO)
-        bot.send_message(message.chat.id, f"❌ Convert error: {e}", reply_markup=menu_kb(uid))
+        db.add_credits(
+            uid,
+            config.CREDITS_PER_VIDEO
+        )
+
+        bot.send_message(
+            message.chat.id,
+            f"❌ Convert error: {e}",
+            reply_markup=menu_kb(uid)
+        )
+
+
+# =========================
+# REGISTER ADMIN PANEL
+# =========================
+register_admin_panel(
+    bot,
+    db,
+    config
+)
 
 
 # =========================
 # FALLBACK TEXT
-# ✅ IMPORTANT: admin waiting থাকলে fallback ধরবে না (broadcast ঠিক হবে)
 # =========================
-@bot.message_handler(func=lambda m: (m.content_type == "text") and (not is_waiting(m.from_user.id)))
+@bot.message_handler(
+    func=lambda m: (
+        m.content_type == "text"
+        and m.from_user is not None
+        and not is_waiting(m.from_user.id)
+    ),
+    content_types=["text"]
+)
 def fallback(message):
     db.upsert_user(message.from_user)
+
     uid = message.from_user.id
-    bot.send_message(message.chat.id, "ভিডিও পাঠান ✅ আমি সেটাকে গোল Video Note করে দিবো।", reply_markup=menu_kb(uid))
+
+    bot.send_message(
+        message.chat.id,
+        "ভিডিও পাঠান ✅ আমি সেটাকে গোল Video Note করে দিবো।",
+        reply_markup=menu_kb(uid)
+    )
 
 
 # =========================
-# REGISTER ADMIN CALLBACKS
+# RUN BOT
 # =========================
-register_admin_panel(bot, db, config)
-
 print("Bot started...")
-bot.infinity_polling(timeout=60, long_polling_timeout=60)
+
+bot.infinity_polling(
+    timeout=60,
+    long_polling_timeout=60
+)
